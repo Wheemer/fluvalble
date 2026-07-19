@@ -27,7 +27,10 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_
 
 
 class FluvalSwitch(FluvalEntity, SwitchEntity):
+    """Legacy LED power switch (disabled by default — use the Light entity)."""
+
     _attr_icon = "mdi:led-strip-variant"
+    _attr_entity_registry_enabled_default = False
 
     def internal_update(self):
         attribute = self.device.attribute(self.attr)
@@ -45,18 +48,20 @@ class FluvalSwitch(FluvalEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn the LED off."""
+        from homeassistant.exceptions import HomeAssistantError
+
         if not await self.device.async_set_switch(self.attr, False):
-            self.internal_update()
-            return
+            raise HomeAssistantError(self.device.command_error_message())
 
         self._attr_is_on = False
         self._async_write_ha_state()
 
     async def async_turn_on(self, **kwargs) -> None:
         """Turn the LED on."""
+        from homeassistant.exceptions import HomeAssistantError
+
         if not await self.device.async_set_switch(self.attr, True):
-            self.internal_update()
-            return
+            raise HomeAssistantError(self.device.command_error_message())
 
         self._attr_is_on = True
         self._async_write_ha_state()

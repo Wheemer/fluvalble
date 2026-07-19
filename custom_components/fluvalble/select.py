@@ -37,15 +37,17 @@ class FluvalSelect(FluvalEntity, SelectEntity):
             return
         self._attr_current_option = attribute.get("default")
         self._attr_options = attribute.get("options", [])
-        self._attr_available = "default" in attribute and self.device.connected
+        # Stay available while idle-disconnected; select reconnects on command.
+        self._attr_available = "default" in attribute
 
         if self.hass:
             self._async_write_ha_state()
 
     async def async_select_option(self, option: str) -> None:
+        from homeassistant.exceptions import HomeAssistantError
+
         if not await self.device.async_select_option(self.attr, option):
-            self.internal_update()
-            return
+            raise HomeAssistantError(self.device.command_error_message())
 
         self._attr_current_option = option
         self._async_write_ha_state()

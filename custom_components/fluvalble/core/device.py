@@ -30,6 +30,10 @@ from . import protocol
 
 _LOGGER = logging.getLogger(__name__)
 
+# Connectivity binary sensor: treat as reachable if seen within this window
+# (idle GATT disconnect after active_time is expected, not a failure).
+REACHABLE_SECONDS = 300
+
 NUMBERS = ["channel_1", "channel_2", "channel_3", "channel_4", "channel_5"]
 SELECTS = ["mode"]
 SENSORS = ["rssi", "last_seen"]
@@ -199,7 +203,7 @@ class Device:
             _LOGGER.warning("Fluval clock sync failed after connect for %s", self.address)
 
     def set_connected(self, connected: bool):
-        """Set the connection status."""
+        """Set the GATT connection status (active BLE session)."""
         self.connected = connected
         if not connected:
             # Allow clock sync again on the next successful connect (#8).
@@ -207,6 +211,29 @@ class Device:
 
         for handler in self.updates_connect:
             handler()
+
+    def is_reachable(self) -> bool:
+        """True when the lamp was seen recently or a GATT session is open.
+
+        Idle disconnect after active_time is intentional — Connectivity should
+        mean “in range / advertising”, not “GATT currently open”.
+        """
+        if self.connected:
+            return True
+        last = self.conn_info.get("last_seen")
+        if last is None:
+            return False
+        if isinstance(last, datetime):
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=UTC)
+            return (datetime.now(UTC) - last).total_seconds() <= REACHABLE_SECONDS
+        return False
+
+    def command_error_message(self) -> str:
+        """Best-effort last BLE error for HomeAssistantError messages."""
+        if self.client and self.client.last_error:
+            return self.client.last_error
+        return self.diagnostics.get("last_error") or "Fluval BLE command failed"
 
     def _notify_diagnostics_throttled(self):
         """Notify diagnostic entities at most once per interval."""
@@ -424,7 +451,9 @@ class Device:
     def attribute(self, attr: str) -> Attribute:
         """Provide attributes to the entities like switches, numbers etc."""
         if attr == "connection":
-            return Attribute(is_on=self.connected, extra=self.conn_info)
+            extra = dict(self.conn_info)
+            extra["gatt_connected"] = self.connected
+            return Attribute(is_on=self.is_reachable(), extra=extra)
         if attr.startswith("channel_"):
             return Attribute(min=0, max=100, step=1, value=self.values[attr])
         if attr == "mode":

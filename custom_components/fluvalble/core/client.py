@@ -355,14 +355,29 @@ class Client:
                     with contextlib.suppress(asyncio.CancelledError):
                         await self.ping_future
 
-                await client.disconnect()
+                # Idle window expired. Never tear down while a command holds
+                # the lock — extend the window and keep the session.
+                if self._command_lock.locked():
+                    self.ping_time = time.time() + max(self._ping_interval, 5)
+                    continue
+
+                async with self._command_lock:
+                    if self.client is not None:
+                        with contextlib.suppress(BleakError, TimeoutError):
+                            await self.client.disconnect()
+                        self.client = None
+                    if self.status_callback:
+                        self.status_callback(False)
             except TimeoutError:
                 pass
             except BleakError as e:
                 _LOGGER.debug("ping error", exc_info=e)
+                self.client = None
+                if self.status_callback:
+                    self.status_callback(False)
+                await asyncio.sleep(1)
             except Exception as e:
                 _LOGGER.warning("ping error", exc_info=e)
-            finally:
                 self.client = None
                 if self.status_callback:
                     self.status_callback(False)

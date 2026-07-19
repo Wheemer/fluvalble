@@ -204,3 +204,24 @@ async def _async_test_set_channels_switches_to_manual_before_write():
     assert device.values["mode"] == "manual"
     device._async_send_packet.assert_called_once()
     device._async_send_channel_state.assert_called_once()
+
+
+def test_connection_attribute_uses_reachability_not_gatt_only():
+    from datetime import UTC, datetime, timedelta
+
+    from custom_components.fluvalble.core.device import REACHABLE_SECONDS
+
+    device = _make_device()
+    device.connected = False
+    device.conn_info["last_seen"] = datetime.now(UTC)
+    assert device.is_reachable() is True
+    attr = device.attribute("connection")
+    assert attr["is_on"] is True
+    assert attr["extra"]["gatt_connected"] is False
+
+    device.conn_info["last_seen"] = datetime.now(UTC) - timedelta(seconds=REACHABLE_SECONDS + 10)
+    assert device.is_reachable() is False
+    assert device.attribute("connection")["is_on"] is False
+
+    device.connected = True
+    assert device.is_reachable() is True
