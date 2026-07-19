@@ -21,7 +21,10 @@ PARALLEL_UPDATES = 0
 
 def create_entities(device: Device) -> list:
     """Build the entity list for this platform."""
-    return [FluvalDiagnosticsButton(device, "refresh_diagnostics")]
+    return [
+        FluvalDiagnosticsButton(device, "refresh_diagnostics"),
+        FluvalSyncClockButton(device, "sync_clock"),
+    ]
 
 
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_entities: AddEntitiesCallback) -> None:
@@ -46,3 +49,17 @@ class FluvalDiagnosticsButton(FluvalEntity, ButtonEntity):
             _LOGGER.warning("Fluval diagnostics failed: %s", report)
         else:
             _LOGGER.info("Fluval diagnostics: %s", report)
+
+
+class FluvalSyncClockButton(FluvalEntity, ButtonEntity):
+    """Button to sync the lamp RTC from Home Assistant time."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:clock-check-outline"
+
+    async def async_press(self) -> None:
+        """Force a clock sync on the connected lamp."""
+        if not await self.device.async_sync_clock(force=True):
+            _LOGGER.warning("Fluval clock sync failed for %s", self.device.mac)
+        else:
+            _LOGGER.info("Fluval clock synced for %s", self.device.mac)

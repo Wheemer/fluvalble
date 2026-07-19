@@ -27,7 +27,8 @@ Fluval BLE turns compatible Fluval aquarium lights into first-class Home Assista
 |--------|-------------|
 | **Local-first control** | Talk directly to the LED fixture over BLE; no internet, cloud account, or app login required. |
 | **Power** | Turn the LED fixture on or off via a switch entity. |
-| **Channels** | Up to five brightness sliders (0–1000) for manual control per channel. 4-channel lamps (e.g. Aquasky 2.0) show channels 1–4 only; Channel 5 is marked unavailable. |
+| **Light** | Real Home Assistant `light` entity with color + brightness. **Plant/Marine**: RGB picker translated to/from Rose·Blue·CW·PW·WW so the preview matches the mix. **AquaSky**: native RGBW. |
+| **Channels** | Optional advanced per-channel sliders (disabled by default). |
 | **Mode** | Select **Manual**, **Automatic**, or **Professional** from a dropdown. Adjusting a brightness slider while in Automatic or Professional mode automatically switches to Manual first. |
 | **Connection health** | Binary sensor shows BLE connection status, with RSSI and last-seen attributes for troubleshooting. |
 | **Auto-discovery** | Home Assistant detects nearby Fluval lights and prompts you to add them—no manual searching required. |
@@ -42,7 +43,9 @@ Designed for Fluval aquarium LED fixtures that use BLE (Bluetooth Low Energy), i
 
 - **Plant 3.0** (5 channels)
 - **Reef 3.0** (5 channels)
-- **Aquasky 2.0 / 3.0** (4 channels)
+- **Aquasky 2.0** (4 channels RGBW)
+- **Aquasky 3.0 / FACEBD** (up to 5 channels)
+- **Mesh (`fff0`)** CBOR lights (experimental)
 - **Marine 3.0** (5 channels)
 - Other 1st‑gen BLE Fluval LED lights
 
@@ -120,11 +123,13 @@ After setup you'll see one device with entities like:
 
 | Entity | Display name | Purpose |
 |--------|-------------|---------|
-| **Light** | Light | Master dimmer — on/off plus overall brightness, scaling all channels together while preserving their ratios. |
+| **Light** | Light | Primary control — colour + brightness. Plant/Marine translate to Rose/Blue/CW/PW/WW; AquaSky uses RGBW. |
 | **Switch** | LED | Turn the light on or off. |
-| **Number** | Channel 1 … Channel 5 | Brightness 0–1000 per channel (manual mode). Channel 5 is unavailable on 4-channel lamps. |
+| **Number** | Channels | Optional advanced 0–100% per channel (disabled by default). |
 | **Select** | Mode | Manual / Automatic / Professional. |
-| **Binary sensor** | Connection | BLE connection status (diagnostic). RSSI and last-seen time in attributes. |
+| **Button** | Sync clock | Re-sync the lamp RTC (also runs automatically on connect). |
+| **Binary sensor** | Connection | BLE connection status. |
+| **Sensors** | Signal / Last seen / Diagnostics | RSSI, last advertisement time, copyable BLE diagnostics. |
 
 Entity IDs follow the pattern `<platform>.fluval_<mac_without_colons>_<name>`, for example `switch.fluval_aabbccddeeff_led_on_off`. You can find the exact IDs in **Settings → Devices & services → Fluval Aquarium LED → entities**.
 
@@ -167,11 +172,11 @@ Entity IDs follow the pattern `<platform>.fluval_<mac_without_colons>_<name>`, f
         - person.you
       to: "not_home"
   action:
-    - service: number.set_value
+    - service: light.turn_on
       target:
-        entity_id: number.fluval_aabbccddeeff_channel_1
+        entity_id: light.fluval_aabbccddeeff_light
       data:
-        value: 200
+        brightness_pct: 20
 ```
 
 **Notify if the light disconnects**
@@ -204,7 +209,8 @@ Replace `aabbccddeeff` with your device's MAC (without colons), and `person.you`
 | **Lamp connected but doesn't respond to actions** | Try the Fluval app first to confirm the light works. If the app works but HA doesn't, open an issue with your model and HA logs. |
 | **Switch doesn't turn light on/off** | Ensure the light model uses the same BLE command set. Try toggling once from the Fluval app, then again from HA. Restart HA and retry. |
 | **Entities show "unavailable"** | The light may be out of range, off, or the BLE connection dropped. Move the light or HA adapter closer; check the connection binary sensor and RSSI. |
-| **Channel 5 shows "unavailable"** | This is expected for 4-channel lamps (e.g. Aquasky 2.0). Only Plant 3.0, Reef 3.0, and Marine 3.0 use 5 channels; Channel 5 is disabled automatically based on the first state packet received. |
+| **Wrong model or channel count** | Open **Configure** on the integration and set **Lamp type** (Plant 5ch / AquaSky 2.0 / AquaSky 3.0). Plant names are detected from the BLE advertisement; FACEBD and status packets refine channel count. |
+| **Schedule wrong after power cut** | Use the **Sync clock** button (also runs automatically on connect). Keep Manual mode if you drive schedules from Home Assistant. |
 | **Channels or mode don't update** | Some features (e.g. mode change) may require the device to send state back; if the firmware doesn't report mode, the dropdown may not reflect external changes. |
 | **Channel sliders don't change the light** | See [Channel sliders troubleshooting](#channel-sliders-dont-change-the-light) below. |
 
@@ -245,7 +251,7 @@ The integration uses Home Assistant's Bluetooth support to connect to the Fluval
 **BLE connection lifecycle:**
 - On load the integration checks the HA Bluetooth cache for the device; if found it connects immediately.
 - A keep-alive loop pings the light every 10 seconds to maintain the connection and flush any queued commands.
-- If the connection drops, the integration reconnects automatically (up to 30 retries, ~5 minutes).
+- If the connection drops, the integration reconnects automatically (several connect retries per command, then waits for the next BLE advertisement).
 - The connection is cleanly closed after 2 minutes of inactivity (no commands sent).
 
 ---

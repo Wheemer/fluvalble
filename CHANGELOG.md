@@ -8,21 +8,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Real **light entity** with proper translation: Plant/Marine RGB ↔ Rose/Blue/CW/PW/WW (preview matches mix); AquaSky native RGBW.
 - AquaSky 3.0/FACEBD discovery, diagnostics, and write support.
 - Lovelace schedule, spectrum bar, and wavelength preview cards.
 - HA-managed schedule storage, auto mode, and physical preview services.
+- **Lamp type** option (Plant / AquaSky 2.0 / AquaSky 3.0 / auto) with Plant channel labels (Rose / Blue / Cold White / Pure White / Warm White).
+- **Sync clock** button and automatic RTC sync on connect (old `0x0E`, FACEBD keys 101/102, mesh `0xCD`).
+- Experimental **mesh** (`0000fff0`) support: `0xD1` + CBOR framing.
 
 ### Changed
-- Renamed channel 5 to Violet.
+- Per-channel number sliders disabled by default (advanced); use the Light entity as primary control.
+- Channel entities use 0–100% consistently; old BLE wire scale (0–1000) is converted on decode.
+- Prefer BLE write-without-response when available (ESPHome-compatible, Aquasky 2.0).
 - Skip unchanged channel writes and throttle physical preview writes.
+- Options changes reload the integration so ping/active-time take effect.
 
 ### Fixed
+- Options Configure gear 500 (`OptionsFlow` / missing `config_entry`) — #16.
+- Plant devices mis-identified as AquaSky — #17.
+- AquaSky 3.0 names no longer forced to 4 channels.
+- Clock sync retries after BLE disconnect/reconnect (#8).
 - Preview stop/restore behavior and FACEBD write target handling.
+- Removed dead send-queue / legacy state-packet paths; public schedule helpers.
 
 ### Notes
-- This preview has only been tested with AquaSky 3.0 and is not suitable
-  for aquarium use until validated and published from the main branch. Use
-  with caution and back up existing Home Assistant setups before testing.
+- Clock sync, Aquasky 2.0 write behaviour, and mesh path still need hardware validation.
 - For issues with other Fluval lights, please open a GitHub issue with the
   model, Home Assistant version, diagnostics output, and relevant logs.
 

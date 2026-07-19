@@ -20,8 +20,10 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.event import async_track_time_interval
 from .core import (
     CONF_ACTIVE_TIME,
+    CONF_LAMP_PROFILE,
     CONF_PING_INTERVAL,
     DEFAULT_ACTIVE_TIME,
+    DEFAULT_LAMP_PROFILE,
     DEFAULT_PING_INTERVAL,
     DOMAIN,
 )
@@ -136,12 +138,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Creating device for %s", mac)
         ping_interval = entry.options.get(CONF_PING_INTERVAL, DEFAULT_PING_INTERVAL)
         active_time = entry.options.get(CONF_ACTIVE_TIME, DEFAULT_ACTIVE_TIME)
+        config_data = dict(entry.data)
+        config_data[CONF_LAMP_PROFILE] = entry.options.get(CONF_LAMP_PROFILE, DEFAULT_LAMP_PROFILE)
         device = Device(
             entry.title,
             service_info.device,
             service_info.advertisement,
             hass=hass,
-            config_data=dict(entry.data),
+            config_data=config_data,
             ping_interval=ping_interval,
             active_time=active_time,
         )
@@ -232,8 +236,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
     )
 
+    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+
     _LOGGER.debug("Setup complete for %s — waiting for BLE", mac)
     return True
+
+
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry when options change so ping/profile take effect."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def _register_static_paths(hass: HomeAssistant) -> None:
@@ -518,8 +529,8 @@ async def _async_apply_auto_schedule(hass: HomeAssistant, entry_id: str) -> None
 
     local_now = dt_util.now()
     minute = (local_now.hour * 60) + local_now.minute
-    points = device._normalize_schedule_points(saved["points"])  # noqa: SLF001
-    channels = device._interpolate_schedule(points, minute)  # noqa: SLF001
+    points = device.normalize_schedule_points(saved["points"])
+    channels = device.interpolate_schedule(points, minute)
     if all(int(device.values.get(channel, -1)) == value for channel, value in channels.items()):
         return
 
@@ -530,7 +541,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         entry_data = hass.data[DOMAIN].pop(entry.entry_id, None)
-        if entry_data and entry_data.get("device"):
-            await entry_data["device"].client.stop()
+        device = entry_data.get("device") if entry_data else None
+        if device and device.client:
+            await device.client.stop()
 
     return unload_ok
