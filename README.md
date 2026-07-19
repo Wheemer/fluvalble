@@ -17,7 +17,7 @@
 
 ## Why Fluval BLE?
 
-Fluval BLE turns compatible Fluval aquarium lights into first-class Home Assistant devices. Control power, colour channels, lighting modes, and connection health directly from your dashboard while keeping every command local over Bluetooth Low Energy.
+Fluval BLE turns compatible Fluval aquarium lights into first-class Home Assistant devices. Control colour and brightness through a normal `light` entity, plus mode and clock sync, while keeping every command local over Bluetooth Low Energy.
 
 ---
 
@@ -26,14 +26,13 @@ Fluval BLE turns compatible Fluval aquarium lights into first-class Home Assista
 | Feature | Description |
 |--------|-------------|
 | **Local-first control** | Talk directly to the LED fixture over BLE; no internet, cloud account, or app login required. |
-| **Power** | Turn the LED fixture on or off via a switch entity. |
-| **Light** | Real Home Assistant `light` entity with color + brightness. **Plant/Marine**: RGB picker translated to/from Rose·Blue·CW·PW·WW so the preview matches the mix. **AquaSky**: native RGBW. |
-| **Channels** | Optional advanced per-channel sliders (disabled by default). |
-| **Mode** | Select **Manual**, **Automatic**, or **Professional** from a dropdown. Adjusting a brightness slider while in Automatic or Professional mode automatically switches to Manual first. |
-| **Connection health** | Binary sensor shows BLE connection status, with RSSI and last-seen attributes for troubleshooting. |
-| **Auto-discovery** | Home Assistant detects nearby Fluval lights and prompts you to add them—no manual searching required. |
+| **Light** | Real Home Assistant `light` entity with on/off, brightness, and colour. **Plant/Marine**: RGB picker translated to/from Rose·Blue·CW·PW·WW. **AquaSky**: native RGBW. |
+| **Mode** | Select **Manual**, **Automatic**, or **Professional**. Changing colour or brightness switches to Manual when needed. |
+| **Clock sync** | Syncs the lamp RTC on connect (and via a **Sync clock** button). |
+| **Reachable** | Shows whether the lamp was seen recently over BLE (not the same as an idle GATT session). |
+| **Auto-discovery** | Home Assistant detects nearby Fluval lights and prompts you to add them. |
 
-Entities are created per device: one switch, one connection sensor, one mode select, and up to five number entities for the channels. Everything updates from the device when it sends state, so the UI stays in sync.
+Each device exposes one light as the primary control, plus mode, clock sync, and diagnostic sensors.
 
 ---
 
@@ -67,10 +66,10 @@ Your light must be controllable via the Fluval (e.g. FluvalSmart / FluvalConnect
 
 1. Ensure [HACS](https://hacs.xyz/) is installed.
 2. In HACS: **Integrations** → **⋮** → **Custom repositories**.
-3. Add: `https://github.com/MrMooreUK/fluvalble`
+3. Add: `https://github.com/Wheemer/fluvalble`
    Type: **Integration**.
 4. Search for **Fluval Aquarium LED** or **Fluval BLE**, then install.
-5. Restart Home Assistant.
+5. Restart Home Assistant (needed once so HA loads the custom component modules).
 
 ### Option B: Manual
 
@@ -123,15 +122,13 @@ After setup you'll see one device with entities like:
 
 | Entity | Display name | Purpose |
 |--------|-------------|---------|
-| **Light** | Light | Primary control — colour + brightness. Plant/Marine translate to Rose/Blue/CW/PW/WW; AquaSky uses RGBW. |
-| **Switch** | LED | Turn the light on or off. |
-| **Number** | Channels | Optional advanced 0–100% per channel (disabled by default). |
+| **Light** | Light | Primary control — on/off, colour, brightness. |
 | **Select** | Mode | Manual / Automatic / Professional. |
 | **Button** | Sync clock | Re-sync the lamp RTC (also runs automatically on connect). |
-| **Binary sensor** | Connection | BLE connection status. |
-| **Sensors** | Signal / Last seen / Diagnostics | RSSI, last advertisement time, copyable BLE diagnostics. |
+| **Binary sensor** | Reachable | Lamp seen recently over BLE. |
+| **Sensors** | Signal / Last seen / Diagnostics | RSSI, last advertisement time, BLE diagnostics. |
 
-Entity IDs follow the pattern `<platform>.fluval_<mac_without_colons>_<name>`, for example `switch.fluval_aabbccddeeff_led_on_off`. You can find the exact IDs in **Settings → Devices & services → Fluval Aquarium LED → entities**.
+Entity IDs look like `light.b8_80_4f_3d_67_c0_light`. Find exact IDs under **Settings → Devices & services → Fluval Aquarium LED → entities**.
 
 ---
 
@@ -146,9 +143,9 @@ Entity IDs follow the pattern `<platform>.fluval_<mac_without_colons>_<name>`, f
     - platform: sun
       event: sunrise
   action:
-    - service: switch.turn_on
+    - service: light.turn_on
       target:
-        entity_id: switch.fluval_aabbccddeeff_led_on_off
+        entity_id: light.b8_80_4f_3d_67_c0_light
 
 - id: fluval_evening
   alias: "Tank light off at sunset"
@@ -156,9 +153,9 @@ Entity IDs follow the pattern `<platform>.fluval_<mac_without_colons>_<name>`, f
     - platform: sun
       event: sunset
   action:
-    - service: switch.turn_off
+    - service: light.turn_off
       target:
-        entity_id: switch.fluval_aabbccddeeff_led_on_off
+        entity_id: light.b8_80_4f_3d_67_c0_light
 ```
 
 **Dim the light when you're away**
@@ -174,27 +171,27 @@ Entity IDs follow the pattern `<platform>.fluval_<mac_without_colons>_<name>`, f
   action:
     - service: light.turn_on
       target:
-        entity_id: light.fluval_aabbccddeeff_light
+        entity_id: light.b8_80_4f_3d_67_c0_light
       data:
         brightness_pct: 20
 ```
 
-**Notify if the light disconnects**
+**Notify if the light is no longer reachable**
 
 ```yaml
-- id: fluval_disconnect
-  alias: "Tank light disconnected"
+- id: fluval_unreachable
+  alias: "Tank light unreachable"
   trigger:
     - platform: state
-      entity_id: binary_sensor.fluval_aabbccddeeff_connection
+      entity_id: binary_sensor.b8_80_4f_3d_67_c0_connection
       to: "off"
   action:
     - service: notify.mobile
       data:
-        message: "Fluval tank light lost connection."
+        message: "Fluval tank light has not been seen over Bluetooth."
 ```
 
-Replace `aabbccddeeff` with your device's MAC (without colons), and `person.you` / `notify.mobile` with your actual entity IDs and services.
+Replace entity IDs with yours, and `person.you` / `notify.mobile` with your actual entities.
 
 ---
 
