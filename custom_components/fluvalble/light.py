@@ -64,7 +64,9 @@ class FluvalLight(FluvalEntity, LightEntity):
     def internal_update(self) -> None:
         # Stay available when idle-disconnected so the UI isn't grayed out.
         self._attr_available = True
-        self._attr_is_on = bool(self.device.values.get("led_on_off")) and self.device.master_brightness() > 0
+        # Follow LED power — Automatic/Professional zero channel values in the
+        # status packet, so brightness must not gate is_on.
+        self._attr_is_on = bool(self.device.values.get("led_on_off"))
         self._attr_brightness = self.device.light_brightness_255() or None
 
         if self.device.light_mode() == "rgb":
@@ -83,20 +85,22 @@ class FluvalLight(FluvalEntity, LightEntity):
 
     async def async_turn_on(self, **kwargs) -> None:
         """Turn on and apply colour / brightness."""
+        from homeassistant.exceptions import HomeAssistantError
+
         brightness = max(1, min(255, int(kwargs.get(ATTR_BRIGHTNESS, self._attr_brightness or 255))))
 
         if ATTR_BRIGHTNESS in kwargs and ATTR_RGB_COLOR not in kwargs and ATTR_RGBW_COLOR not in kwargs:
-            await self._async_brightness_only(brightness)
+            if not await self._async_brightness_only(brightness):
+                raise HomeAssistantError(self.device.command_error_message())
             self.internal_update()
             return
 
         channels = self._channels_from_kwargs(kwargs, brightness)
         if channels is None:
-            if self.device.master_brightness() > 0:
+            if self.device.master_brightness() > 0 or bool(self.device.values.get("led_on_off")):
                 if not await self.device.async_set_switch("led_on_off", True):
-                    self.internal_update()
-                else:
-                    self.internal_update()
+                    raise HomeAssistantError(self.device.command_error_message())
+                self.internal_update()
                 return
             channels = (
                 self.device.channels_from_rgb(_DEFAULT_PLANT_RGB, brightness)
@@ -105,8 +109,7 @@ class FluvalLight(FluvalEntity, LightEntity):
             )
 
         if not await self.device.async_apply_light_channels(channels):
-            self.internal_update()
-            return
+            raise HomeAssistantError(self.device.command_error_message())
         self.internal_update()
 
     def _channels_from_kwargs(self, kwargs: dict, brightness: int) -> dict[str, int] | None:
@@ -133,9 +136,10 @@ class FluvalLight(FluvalEntity, LightEntity):
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn the light off."""
+        from homeassistant.exceptions import HomeAssistantError
+
         if not await self.device.async_set_switch("led_on_off", False):
-            self.internal_update()
-            return
+            raise HomeAssistantError(self.device.command_error_message())
 
         self._attr_is_on = False
         self._async_write_ha_state()

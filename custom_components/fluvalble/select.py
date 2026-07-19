@@ -1,6 +1,5 @@
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -15,14 +14,14 @@ def create_entities(device: Device) -> list:
     return [FluvalSelect(device, s) for s in device.selects()]
 
 
-async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_entities: AddEntitiesCallback):
-    runtime = config_entry.runtime_data
-    device = runtime.device
-
-    if device:
-        add_entities(create_entities(device))
-    else:
-        runtime.pending_add_entities[Platform.SELECT] = add_entities
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Fluval selects from a config entry."""
+    del hass
+    add_entities(create_entities(config_entry.runtime_data.device))
 
 
 class FluvalSelect(FluvalEntity, SelectEntity):
@@ -37,25 +36,17 @@ class FluvalSelect(FluvalEntity, SelectEntity):
             return
         self._attr_current_option = attribute.get("default")
         self._attr_options = attribute.get("options", [])
-        self._attr_available = "default" in attribute and self.device.controls_available
+        # Stay available while idle-disconnected; select reconnects on command.
+        self._attr_available = "default" in attribute
 
         if self.hass:
             self._async_write_ha_state()
 
     async def async_select_option(self, option: str) -> None:
-        if self.attr == "schedule_mode":
-            if not self.hass or not self.device.entry_id:
-                self.internal_update()
-                return
-            from . import async_set_schedule_mode  # noqa: PLC0415
-
-            await async_set_schedule_mode(self.hass, self.device.entry_id, option)
-            self.internal_update()
-            return
+        from homeassistant.exceptions import HomeAssistantError
 
         if not await self.device.async_select_option(self.attr, option):
-            self.internal_update()
-            return
+            raise HomeAssistantError(self.device.command_error_message())
 
         self._attr_current_option = option
         self._async_write_ha_state()
