@@ -266,11 +266,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
     return True
 
 
-async def async_reload_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> None:
-    """Reload a config entry (options change, UI reload, etc.)."""
-    await hass.config_entries.async_reload(entry.entry_id)
-
-
 async def _register_static_paths(hass: HomeAssistant) -> None:
     """Serve the Fluval BLE Lovelace card from the integration directory."""
     if hass.data[DOMAIN].get(STATIC_REGISTERED):
@@ -571,7 +566,11 @@ async def _async_apply_auto_schedule(hass: HomeAssistant, entry_id: str) -> None
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bool:
-    """Unload a config entry and tear down BLE / platform resources."""
+    """Unload a config entry and tear down BLE / platform resources.
+
+    This is the supported path for options changes and UI Reload — a full
+    Home Assistant restart is not required for entry lifecycle.
+    """
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
@@ -581,10 +580,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> b
         runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id)
 
     if isinstance(runtime, FluvalRuntimeData) and runtime.device is not None:
-        try:
-            await runtime.device.client.stop()
-        except Exception:  # noqa: BLE001
-            _LOGGER.debug("Error stopping Fluval BLE client during unload", exc_info=True)
+        client = runtime.device.client
+        if client is not None:
+            try:
+                await client.stop()
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Error stopping Fluval BLE client during unload", exc_info=True)
+        runtime.device = None
+        runtime.pending_add_entities.clear()
 
     hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+    entry.runtime_data = None  # type: ignore[assignment]
     return True
+
+
+async def async_reload_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> None:
+    """Reload a config entry (options change, UI reload, unique_id migrate, etc.)."""
+    await hass.config_entries.async_reload(entry.entry_id)
