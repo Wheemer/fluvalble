@@ -26,8 +26,11 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_
 
 
 class FluvalNumber(FluvalEntity, NumberEntity):
+    """Advanced per-channel slider (disabled by default — use the light entity)."""
+
     _attr_icon = "mdi:brightness-6"
     _attr_mode = NumberMode.SLIDER
+    _attr_entity_registry_enabled_default = False
 
     def internal_update(self):
         attribute = self.device.attribute(self.attr)
@@ -36,7 +39,7 @@ class FluvalNumber(FluvalEntity, NumberEntity):
             if self.hass:
                 self._async_write_ha_state()
             return
-        self._attr_available = "value" in attribute and self.device.connected
+        self._attr_available = "value" in attribute
         self._attr_native_min_value = attribute.get("min")
         self._attr_native_max_value = attribute.get("max")
         self._attr_native_step = attribute.get("step")
