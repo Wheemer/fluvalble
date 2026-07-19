@@ -154,12 +154,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
         _LOGGER.debug("Creating device for %s", mac)
         ping_interval = entry.options.get(CONF_PING_INTERVAL, DEFAULT_PING_INTERVAL)
         active_time = entry.options.get(CONF_ACTIVE_TIME, DEFAULT_ACTIVE_TIME)
+        # Options (lamp_profile, etc.) live on entry.options — merge so Device
+        # sees Plant/AquaSky overrides, not just the original config data.
+        config_data = {**dict(entry.data), **dict(entry.options)}
         device = Device(
             entry.title,
             service_info.device,
             service_info.advertisement,
             hass=hass,
-            config_data=dict(entry.data),
+            config_data=config_data,
             ping_interval=ping_interval,
             active_time=active_time,
         )
