@@ -76,7 +76,7 @@ PLANT_CHANNEL_RGB = {
 
 
 class Attribute(TypedDict, total=False):
-    """Attributes used by entities like binary_sensor and number."""
+    """Attributes used by light, select, and diagnostic entities."""
 
     options: list[str]
     default: str
@@ -161,12 +161,25 @@ class Device:
         """Expose a model name for Home Assistant device info."""
         return self.model
 
+    def touch_seen(self, *, rssi: int | None = None, notify: bool = True) -> None:
+        """Record that we heard from / talked to the lamp just now.
+
+        Advertisements often pause while GATT is connected or the lamp is idle,
+        so last_seen must also advance on successful connects and writes —
+        otherwise the UI looks like the lamp vanished for minutes.
+        """
+        self.conn_info["last_seen"] = datetime.now(UTC)
+        if rssi is not None:
+            self.conn_info["rssi"] = rssi
+        if notify:
+            for handler in self.updates_connect:
+                handler()
+
     def update_ble(self, device: BLEDevice, advertisement: AdvertisementData):
-        """Update BLE metadata."""
+        """Update BLE metadata from an advertisement."""
         self.address = device.address
         self.conn_info["mac"] = device.address
-        self.conn_info["last_seen"] = datetime.now(UTC)
-        self.conn_info["rssi"] = advertisement.rssi
+        self.touch_seen(rssi=advertisement.rssi, notify=False)
         self.conn_info["service_uuids"] = list(advertisement.service_uuids)
         self.conn_info["service_data"] = {
             key: bytes(value).hex() for key, value in advertisement.service_data.items()
@@ -205,12 +218,13 @@ class Device:
     def set_connected(self, connected: bool):
         """Set the GATT connection status (active BLE session)."""
         self.connected = connected
-        if not connected:
+        if connected:
+            self.touch_seen()
+        else:
             # Allow clock sync again on the next successful connect (#8).
             self._clock_synced = False
-
-        for handler in self.updates_connect:
-            handler()
+            for handler in self.updates_connect:
+                handler()
 
     def is_reachable(self) -> bool:
         """True when the lamp was seen recently or a GATT session is open.
@@ -906,9 +920,8 @@ class Device:
             }
         )
 
+        self.touch_seen()
         for handler in self.updates_component:
-            handler()
-        for handler in self.updates_connect:
             handler()
         return True
 
