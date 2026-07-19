@@ -105,12 +105,10 @@ SCHEDULE_SERVICE_SCHEMA = vol.Schema(
 )
 
 PLATFORMS: list[Platform] = [
-    Platform.NUMBER,
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
     Platform.SELECT,
     Platform.SENSOR,
-    Platform.SWITCH,
     Platform.LIGHT,
 ]
 
@@ -177,8 +175,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
 
         # Retroactively add entities for platforms that set up before the
         # device was available (they stashed their add_entities callback).
-        from .switch import create_entities as switch_entities  # noqa: PLC0415
-        from .number import create_entities as number_entities  # noqa: PLC0415
         from .binary_sensor import create_entities as sensor_entities  # noqa: PLC0415
         from .select import create_entities as select_entities  # noqa: PLC0415
         from .light import create_entities as light_entities  # noqa: PLC0415
@@ -186,8 +182,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
         from .sensor import create_entities as diagnostics_entities  # noqa: PLC0415
 
         factories = {
-            Platform.SWITCH: switch_entities,
-            Platform.NUMBER: number_entities,
             Platform.BINARY_SENSOR: sensor_entities,
             Platform.SELECT: select_entities,
             Platform.LIGHT: light_entities,
