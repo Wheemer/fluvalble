@@ -18,6 +18,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_MAC, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.device_registry import format_mac
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 
@@ -129,6 +130,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
     if not mac:
         _LOGGER.error("Config entry %s has no MAC address", entry.entry_id)
         return False
+
+    # Discovery uses lowercase format_mac unique_ids. Migrate legacy uppercase
+    # unique_ids so the same lamp is not rediscovered as a new device.
+    desired_unique_id = format_mac(mac)
+    if entry.unique_id != desired_unique_id:
+        hass.config_entries.async_update_entry(entry, unique_id=desired_unique_id)
 
     # runtime_data is the supported place for per-entry state; keep a thin
     # hass.data mirror so older helpers/services can still resolve by entry_id.
