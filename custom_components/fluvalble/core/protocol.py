@@ -3,23 +3,33 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Any
 
 from . import encryption
 
-MAX_CBOR_CONTAINER_ITEMS = 64
-MAX_CBOR_BYTE_STRING_LENGTH = 4096
-MAX_CBOR_NESTING_DEPTH = 8
-
+# FACEBD / WiFi-over-BLE CBOR keys (FluvalConnect)
+WIFI_TZ_OFFSET_KEY = 101
+WIFI_CLOCK_MS_KEY = 102
 WIFI_MODE_KEY = 103
 WIFI_SWITCH_KEY = 104
 WIFI_MANUAL_KEY = 109
 WIFI_CHANNEL_KEYS = (110, 111, 112, 113, 114)
 
+# Mesh BLE (service 0000fff0) CBOR keys — FluvalConnect
+MESH_MODE_KEY = 1
+MESH_SWITCH_KEY = 2
+MESH_MANUAL_KEY = 14
+MESH_CHANNEL_KEYS = (3, 4, 5, 6, 7)
+MESH_OPCODE_READ = 0xD0
+MESH_OPCODE_SET = 0xD1
+MESH_OPCODE_CLOCK = 0xCD
+
 OLD_READ_PARAMS = bytes((0x68, 0x05))
 OLD_MODE = 0x02
 OLD_SWITCH = 0x03
 OLD_ALL_ZONE = 0x04
+OLD_CLOCK = 0x0E
 
 
 def wifi_switch_packet(is_on: bool) -> bytes:
@@ -39,6 +49,53 @@ def wifi_all_zone_packet(values: Iterable[int]) -> bytes:
     return cbor_map(packet)
 
 
+def wifi_clock_packet(now: datetime | None = None) -> bytes:
+    """Build FACEBD clock sync (milliseconds since Unix epoch)."""
+    moment = now or datetime.now().astimezone()
+    millis = int(moment.timestamp() * 1000)
+    return cbor_map({WIFI_CLOCK_MS_KEY: millis})
+
+
+def wifi_timezone_packet(now: datetime | None = None) -> bytes:
+    """Build FACEBD timezone offset in minutes from UTC."""
+    moment = now or datetime.now().astimezone()
+    offset = moment.utcoffset()
+    minutes = int(offset.total_seconds() // 60) if offset is not None else 0
+    return cbor_map({WIFI_TZ_OFFSET_KEY: minutes})
+
+
+def mesh_switch_packet(is_on: bool) -> bytes:
+    """Build mesh on/off packet (0xD1 + CBOR)."""
+    return mesh_set_packet({MESH_SWITCH_KEY: is_on})
+
+
+def mesh_mode_packet(mode: int) -> bytes:
+    """Build mesh mode packet (0xD1 + CBOR)."""
+    return mesh_set_packet({MESH_MODE_KEY: mode})
+
+
+def mesh_all_zone_packet(values: Iterable[int]) -> bytes:
+    """Build mesh multi-channel packet (0xD1 + CBOR)."""
+    packet: dict[int, bool | int] = {MESH_MANUAL_KEY: 0}
+    packet.update({key: _clamp_percent(value) for key, value in zip(MESH_CHANNEL_KEYS, values, strict=False)})
+    return mesh_set_packet(packet)
+
+
+def mesh_read_params_packet() -> bytes:
+    """Build mesh status read request."""
+    return bytes((MESH_OPCODE_READ, 0xFF))
+
+
+def mesh_clock_packet(now: datetime | None = None) -> bytes:
+    """Build mesh clock sync (opcode 0xCD + Y M D W h m s)."""
+    return bytes((MESH_OPCODE_CLOCK,)) + _clock_payload(now)
+
+
+def mesh_set_packet(values: dict[int, bool | int]) -> bytes:
+    """Wrap a CBOR map with the mesh set opcode."""
+    return bytes((MESH_OPCODE_SET,)) + cbor_map(values)
+
+
 def old_read_params_packet() -> bytes:
     """Build the old BLE parameter read packet."""
     return old_packet(OLD_READ_PARAMS)
@@ -55,12 +112,17 @@ def old_mode_packet(mode: int) -> bytes:
 
 
 def old_all_zone_packet(values: Iterable[int]) -> bytes:
-    """Build the old BLE all-channel packet."""
+    """Build the old BLE all-channel packet (wire scale 0–1000)."""
     packet = bytearray((0x68, OLD_ALL_ZONE))
     for value in values:
         scaled = _clamp_percent(value) * 10
         packet.extend((scaled & 0xFF, scaled >> 8))
     return old_packet(packet)
+
+
+def old_clock_packet(now: datetime | None = None) -> bytes:
+    """Build old BLE clock sync (cmd 0x0E: Y M D W h m s)."""
+    return old_packet(bytes((0x68, OLD_CLOCK)) + _clock_payload(now))
 
 
 def old_packet(packet: bytes) -> bytes:
@@ -76,8 +138,15 @@ def encrypted_old_packet(packet: bytes) -> bytearray:
     return encryption.encrypt(encryption.add_crc(bytearray(packet)))
 
 
+def strip_mesh_opcode(data: bytes) -> bytes:
+    """Remove a leading mesh opcode byte when present."""
+    if data and data[0] in (MESH_OPCODE_SET, MESH_OPCODE_READ, 0xFF):
+        return data[1:]
+    return data
+
+
 def cbor_map(values: dict[int, bool | int]) -> bytes:
-    """Encode the tiny CBOR subset used by Fluval WiFi BLE light commands."""
+    """Encode the tiny CBOR subset used by Fluval WiFi/mesh BLE light commands."""
     if len(values) > 23:
         raise ValueError("CBOR helper only supports small maps")
 
@@ -87,47 +156,69 @@ def cbor_map(values: dict[int, bool | int]) -> bytes:
         if isinstance(value, bool):
             packet.append(0xF5 if value else 0xF4)
         else:
-            packet.extend(_cbor_uint(value))
+            packet.extend(_cbor_int(value))
     return bytes(packet)
 
 
 def decode_cbor_map(data: bytes) -> dict[Any, Any] | None:
-    """Decode the CBOR maps the FACEBD controllers use for light state."""
+    """Decode the CBOR maps the FACEBD/mesh controllers use for light state."""
     if not data or data[0] >> 5 != 5:
         return None
 
-    try:
-        value, offset = _read_cbor_value(data, 0)
-    except (UnicodeError, ValueError):
-        return None
+    value, _offset = _read_cbor_value(data, 0)
     if not isinstance(value, dict):
         return None
-    if offset != len(data):
-        return None
     return value
+
+
+def _clock_payload(now: datetime | None = None) -> bytes:
+    """Return Y M D W h m s used by old and mesh clock sync."""
+    moment = (now or datetime.now().astimezone()).astimezone()
+    # Fluval week: Sunday = 0
+    weekday = (moment.weekday() + 1) % 7
+    return bytes(
+        (
+            moment.year % 100,
+            moment.month,
+            moment.day,
+            weekday,
+            moment.hour,
+            moment.minute,
+            moment.second,
+        )
+    )
 
 
 def _clamp_percent(value: int) -> int:
     return max(0, min(100, int(value)))
 
 
+def _cbor_int(value: int) -> bytes:
+    if value >= 0:
+        return _cbor_uint(value)
+    # Major type 1: negative integer -1 - n
+    return _cbor_major(1, -1 - value)
+
+
 def _cbor_uint(value: int) -> bytes:
     if value < 0:
         raise ValueError("CBOR helper only supports unsigned integers")
+    return _cbor_major(0, value)
+
+
+def _cbor_major(major: int, value: int) -> bytes:
     if value < 24:
-        return bytes((value,))
+        return bytes(((major << 5) | value,))
     if value <= 0xFF:
-        return bytes((0x18, value))
+        return bytes(((major << 5) | 24, value))
     if value <= 0xFFFF:
-        return bytes((0x19, value >> 8, value & 0xFF))
+        return bytes(((major << 5) | 25, value >> 8, value & 0xFF))
     if value <= 0xFFFFFFFF:
-        return bytes((0x1A, *value.to_bytes(4, "big")))
-    return bytes((0x1B, *value.to_bytes(8, "big")))
+        return bytes(((major << 5) | 26, *value.to_bytes(4, "big")))
+    return bytes(((major << 5) | 27, *value.to_bytes(8, "big")))
 
 
-def _read_cbor_value(data: bytes, offset: int, depth: int = 0) -> tuple[Any, int]:
-    if depth > MAX_CBOR_NESTING_DEPTH:
-        raise ValueError("CBOR nesting is too deep")
+def _read_cbor_value(data: bytes, offset: int) -> tuple[Any, int]:
     if offset >= len(data):
         raise ValueError("Unexpected end of CBOR data")
 
@@ -146,8 +237,6 @@ def _read_cbor_value(data: bytes, offset: int, depth: int = 0) -> tuple[Any, int
         return -1 - value, offset
     if major in (2, 3):
         length, offset = _read_cbor_length(data, offset)
-        if length > MAX_CBOR_BYTE_STRING_LENGTH:
-            raise ValueError("CBOR byte/text string is too large")
         end = offset + length
         if end > len(data):
             raise ValueError("CBOR byte/text string is truncated")
@@ -157,23 +246,17 @@ def _read_cbor_value(data: bytes, offset: int, depth: int = 0) -> tuple[Any, int
         return raw.decode("utf-8", errors="replace"), end
     if major == 4:
         length, offset = _read_cbor_length(data, offset)
-        if length > MAX_CBOR_CONTAINER_ITEMS:
-            raise ValueError("CBOR array has too many items")
         items = []
         for _ in range(length):
-            value, offset = _read_cbor_value(data, offset, depth + 1)
+            value, offset = _read_cbor_value(data, offset)
             items.append(value)
         return items, offset
     if major == 5:
         length, offset = _read_cbor_length(data, offset)
-        if length > MAX_CBOR_CONTAINER_ITEMS:
-            raise ValueError("CBOR map has too many items")
         result = {}
         for _ in range(length):
-            key, offset = _read_cbor_value(data, offset, depth + 1)
-            value, offset = _read_cbor_value(data, offset, depth + 1)
-            if not isinstance(key, (bool, bytes, int, str, type(None))):
-                raise ValueError("CBOR map key is not hashable")
+            key, offset = _read_cbor_value(data, offset)
+            value, offset = _read_cbor_value(data, offset)
             result[key] = value
         return result, offset
     if major == 7:

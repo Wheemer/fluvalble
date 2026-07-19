@@ -1,6 +1,6 @@
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import EntityCategory, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -27,8 +27,12 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_
 
 
 class FluvalNumber(FluvalEntity, NumberEntity):
+    """Advanced per-channel control — optional; the Light entity is primary."""
+
     _attr_icon = "mdi:brightness-6"
     _attr_mode = NumberMode.SLIDER
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_entity_registry_enabled_default = False
 
     def internal_update(self):
         attribute = self.device.attribute(self.attr)

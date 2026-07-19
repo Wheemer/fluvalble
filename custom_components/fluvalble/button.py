@@ -23,7 +23,7 @@ def create_entities(device: Device) -> list:
     """Build the entity list for this platform."""
     return [
         FluvalDiagnosticsButton(device, "refresh_diagnostics"),
-        FluvalChannelTestButton(device, "test_led_channels"),
+        FluvalSyncClockButton(device, "sync_clock"),
     ]
 
 
@@ -51,16 +51,15 @@ class FluvalDiagnosticsButton(FluvalEntity, ButtonEntity):
             _LOGGER.info("Fluval diagnostics: %s", report)
 
 
-class FluvalChannelTestButton(FluvalEntity, ButtonEntity):
-    """Run a visible, verified test of each physical LED channel."""
+class FluvalSyncClockButton(FluvalEntity, ButtonEntity):
+    """Button to sync the lamp RTC from Home Assistant time."""
 
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_icon = "mdi:led-strip-variant"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:clock-check-outline"
 
     async def async_press(self) -> None:
-        """Illuminate every supported channel and record exact readback."""
-        if not await self.device.async_test_led_channels():
-            _LOGGER.warning(
-                "Fluval LED channel test did not verify every channel: %s",
-                self.device.diagnostics,
-            )
+        """Force a clock sync on the connected lamp."""
+        if not await self.device.async_sync_clock(force=True):
+            _LOGGER.warning("Fluval clock sync failed for %s", self.device.mac)
+        else:
+            _LOGGER.info("Fluval clock synced for %s", self.device.mac)

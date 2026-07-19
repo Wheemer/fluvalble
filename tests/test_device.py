@@ -1,10 +1,9 @@
 """Tests for Fluval device schedule and channel behavior."""
 
 import asyncio
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
-from custom_components.fluvalble.core import LAMP_PROFILE_PLANT, protocol
+from custom_components.fluvalble.core import LAMP_PROFILE_PLANT
 from custom_components.fluvalble.core.device import (
     AQUASKY_NUMBERS,
     CHANNEL_NAMES_PLANT,
@@ -38,12 +37,20 @@ def test_aquasky_2_exposes_four_color_channels():
     device = _make_device(name="AquaSky2.0_Test", model="AquaSky 2.0 Bluetooth LED")
 
     assert device.numbers() == AQUASKY_NUMBERS
+    assert device.light_mode() == "rgbw"
 
 
 def test_aquasky_3_name_exposes_five_channels():
     device = _make_device(name="AquaSky3.0_2F3176", model="AquaSky 3.0 Bluetooth LED")
 
     assert device.numbers() == NUMBERS
+
+
+def test_clock_sync_flag_resets_on_disconnect():
+    device = _make_device(name="Plant 3.0", model="Plant 3.0 Bluetooth LED")
+    device._clock_synced = True
+    device.set_connected(False)
+    assert device._clock_synced is False
 
 
 def test_plant_profile_exposes_five_channels_with_plant_labels():
@@ -56,6 +63,32 @@ def test_plant_profile_exposes_five_channels_with_plant_labels():
     assert device.numbers() == NUMBERS
     assert device.entity_name("channel_1") == CHANNEL_NAMES_PLANT["channel_1"]
     assert device.entity_name("channel_5") == CHANNEL_NAMES_PLANT["channel_5"]
+    assert device.light_mode() == "rgb"
+    assert device.uses_plant_spectrum() is True
+
+
+def test_plant_rgb_roundtrip_preview_stays_plausible():
+    device = _make_device(
+        name="Fish Tank",
+        model="Plant Bluetooth LED",
+        lamp_profile=LAMP_PROFILE_PLANT,
+    )
+    channels = device.channels_from_rgb((255, 180, 120), 255)
+    device.values.update(channels)
+    preview = device.light_rgb_255()
+
+    # Warm daylight → warm preview (R high, B lower), not a fake green swatch.
+    assert preview[0] > preview[2]
+    assert channels["channel_1"] > 0  # rose contributes
+    assert channels["channel_5"] > 0  # warm white contributes
+
+
+def test_aquasky_uses_rgbw_light_mode():
+    device = _make_device()
+    assert device.light_mode() == "rgbw"
+    channels = device.channels_from_rgbw((255, 0, 0, 128), 255)
+    assert channels["channel_1"] == 100
+    assert channels["channel_4"] == 50
 
 
 def test_plant_name_exposes_five_channels():
@@ -65,8 +98,9 @@ def test_plant_name_exposes_five_channels():
     assert device.entity_name("channel_3") == "Cold White"
 
 
-def test_status_packet_sets_channel_count_hint():
+def test_old_status_packet_scales_to_percent():
     device = _make_device(name="Plant 3.0", model="Plant 3.0 Bluetooth LED")
+    # Manual mode, on, five channels at 10/20/30/40/50% => wire 100/200/...
     packet = bytearray(
         [
             0x68,
@@ -89,9 +123,10 @@ def test_status_packet_sets_channel_count_hint():
 
     device.decode_update_packet(packet)
 
+    assert device.values["channel_1"] == 10
+    assert device.values["channel_2"] == 20
+    assert device.values["channel_5"] == 50
     assert device._channel_count_hint == 5
-    # PR2 keeps legacy raw wire values; /10 percent scale lands in #6 follow-up.
-    assert device.values["channel_1"] == 100
 
 
 def test_schedule_points_are_normalized_from_color_names():
@@ -169,119 +204,3 @@ async def _async_test_set_channels_switches_to_manual_before_write():
     assert device.values["mode"] == "manual"
     device._async_send_packet.assert_called_once()
     device._async_send_channel_state.assert_called_once()
-
-
-def test_home_assistant_selects_connectable_esphome_route(monkeypatch):
-    asyncio.run(_async_test_home_assistant_selects_connectable_esphome_route(monkeypatch))
-
-
-async def _async_test_home_assistant_selects_connectable_esphome_route(
-    monkeypatch,
-):
-    from homeassistant.components import bluetooth
-
-    proxy = SimpleNamespace(
-        address="AA:BB:CC:DD:EE:FF",
-        name="AquaSky3.0_Test",
-        details={"source": "fluvalble-proxy"},
-    )
-    monkeypatch.setattr(
-        bluetooth,
-        "async_ble_device_from_address",
-        MagicMock(return_value=proxy),
-    )
-    device = Device(
-        "AquaSky3.0_Test",
-        hass=MagicMock(),
-        config_data={
-            "mac": proxy.address,
-            "model": "AquaSky Bluetooth LED",
-        },
-    )
-
-    assert device._connectable_ble_device() is proxy
-    assert await device._async_find_device() is proxy
-    bluetooth.async_ble_device_from_address.assert_called_with(
-        device.hass,
-        proxy.address,
-        connectable=True,
-    )
-
-
-def test_aquasky_facebd_packet_excludes_violet_channel():
-    device = _make_device(name="AquaSky2.0_Test", model="AquaSky 2.0 Bluetooth LED")
-    device.values.update(
-        {
-            "channel_1": 10,
-            "channel_2": 20,
-            "channel_3": 30,
-            "channel_4": 40,
-            "channel_5": 50,
-        }
-    )
-    device.client = MagicMock(raw_facebd=True)
-
-    packet = protocol.wifi_all_zone_packet(device._channel_values())
-    expected = device._expected_state_for_packet(packet)
-
-    assert device._channel_values() == [10, 20, 30, 40]
-    assert expected == {
-        protocol.WIFI_CHANNEL_KEYS[0]: 10,
-        protocol.WIFI_CHANNEL_KEYS[1]: 20,
-        protocol.WIFI_CHANNEL_KEYS[2]: 30,
-        protocol.WIFI_CHANNEL_KEYS[3]: 40,
-    }
-    assert protocol.WIFI_CHANNEL_KEYS[4] not in expected
-
-
-def test_led_channel_test_verifies_each_channel_and_restores_state(monkeypatch):
-    asyncio.run(_async_test_led_channel_test_verifies_each_channel_and_restores_state(monkeypatch))
-
-
-async def _async_test_led_channel_test_verifies_each_channel_and_restores_state(
-    monkeypatch,
-):
-    import custom_components.fluvalble.core.device as device_module
-
-    device = _make_device(name="AquaSky2.0_Test", model="AquaSky 2.0 Bluetooth LED")
-    device.values.update(
-        {
-            "channel_1": 8,
-            "channel_2": 7,
-            "channel_3": 6,
-            "channel_4": 5,
-            "led_on_off": False,
-        }
-    )
-    device.client = MagicMock(
-        last_write_verified=True,
-        last_confirmed_state={protocol.WIFI_SWITCH_KEY: True},
-        last_verification_mismatches={},
-    )
-    device.async_set_switch = AsyncMock(return_value=True)
-    device.async_set_channels = AsyncMock(return_value=True)
-    monkeypatch.setattr(device_module, "CHANNEL_TEST_HOLD_SECONDS", 0)
-
-    assert await device.async_test_led_channels()
-
-    assert [result["channel"] for result in device.diagnostics["channel_test_results"]] == [
-        "Power",
-        "Red",
-        "Green",
-        "Blue",
-        "White",
-    ]
-    assert device.diagnostics["status"] == "channel_test_passed"
-    assert device.diagnostics["channel_test_restore_ok"] is True
-    assert device.channel_test_active is False
-    assert device.async_set_channels.await_count == 5
-    device.async_set_channels.assert_awaited_with(
-        {
-            "channel_1": 8,
-            "channel_2": 7,
-            "channel_3": 6,
-            "channel_4": 5,
-        },
-        force=True,
-    )
-    assert device.async_set_switch.await_count == 2

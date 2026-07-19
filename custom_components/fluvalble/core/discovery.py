@@ -91,9 +91,7 @@ def detect_model(name: str | None, advertisement: AdvertisementData | None) -> s
         return display_name
 
     if advertisement and any(
-        uuid.startswith(prefix)
-        for uuid in _advertised_protocol_keys(advertisement)
-        for prefix in FLUVAL_SERVICE_PREFIXES
+        uuid.startswith(prefix) for uuid in _advertised_protocol_keys(advertisement) for prefix in FLUVAL_SERVICE_PREFIXES
     ):
         if facebd:
             return "AquaSky 3.0 Bluetooth LED"
