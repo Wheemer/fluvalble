@@ -246,6 +246,11 @@ def _stub_homeassistant():
     # ---- homeassistant.components.light ----
     class ColorMode(str, enum.Enum):
         BRIGHTNESS = "brightness"
+        RGB = "rgb"
+        RGBW = "rgbw"
+
+    class LightEntityFeature(enum.IntFlag):
+        EFFECT = 4
 
     class _FakeLightEntity(_FakeEntity):
         _attr_is_on = None
@@ -256,7 +261,11 @@ def _stub_homeassistant():
     ha_light = types.ModuleType("homeassistant.components.light")
     ha_light.LightEntity = _FakeLightEntity
     ha_light.ColorMode = ColorMode
+    ha_light.LightEntityFeature = LightEntityFeature
     ha_light.ATTR_BRIGHTNESS = "brightness"
+    ha_light.ATTR_EFFECT = "effect"
+    ha_light.ATTR_RGB_COLOR = "rgb_color"
+    ha_light.ATTR_RGBW_COLOR = "rgbw_color"
 
     # ---- homeassistant.components.websocket_api ----
     ha_ws = types.ModuleType("homeassistant.components.websocket_api")
@@ -282,6 +291,7 @@ def _stub_homeassistant():
     # ---- homeassistant.helpers.event ----
     ha_event = types.ModuleType("homeassistant.helpers.event")
     ha_event.async_track_time_interval = MagicMock(return_value=lambda: None)
+    ha_event.async_track_point_in_time = MagicMock(return_value=lambda: None)
 
     # ---- homeassistant.util.dt ----
     ha_util = types.ModuleType("homeassistant.util")

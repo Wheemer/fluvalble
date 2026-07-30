@@ -49,17 +49,31 @@ def test_old_clock_packet_shape():
     assert packet[2] == local.year % 100
     assert packet[3] == local.month
     assert packet[4] == local.day
+    assert packet[5] == local.isoweekday()
     assert packet[6] == local.hour
     assert packet[7] == local.minute
     assert packet[8] == local.second
 
 
-def test_old_all_zone_scales_percent_to_wire():
+def test_old_all_zone_scales_percent_to_wire_be():
+    """APK integerToHexLittle(progress*10) is zero-padded BE, not byte-swapped."""
     packet = protocol.old_all_zone_packet([10, 20, 30, 40, 50])
 
-    # 10% -> 100 little-endian
     assert packet[0:2] == bytes((0x68, 0x04))
-    assert packet[2:4] == bytes((100 & 0xFF, 100 >> 8))
+    assert packet[2:4] == bytes((100 >> 8, 100 & 0xFF))
+    # CRC over 6804 + five BE words
+    assert packet[-1] == protocol.old_packet(packet[:-1])[-1]
+
+    # 100% → 1000 = 0x03E8
+    full = protocol.old_all_zone_packet([100])
+    assert full[2:4] == bytes((0x03, 0xE8))
+
+
+def test_old_weather_effect_packet_matches_apk_680a_command():
+    packet = protocol.old_weather_effect_packet(2)
+
+    assert packet[0:3] == bytes((0x68, 0x0A, 0x02))
+    assert packet[-1] == protocol.old_packet(packet[:-1])[-1]
 
 
 def test_mesh_set_packets_use_d1_prefix():
@@ -84,7 +98,7 @@ def test_mesh_channels_and_clock():
         local.year % 100,
         local.month,
         local.day,
-        (local.weekday() + 1) % 7,
+        local.isoweekday(),
         local.hour,
         local.minute,
         local.second,

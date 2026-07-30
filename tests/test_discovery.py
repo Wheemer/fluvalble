@@ -66,19 +66,19 @@ def test_mesh_with_fluval_name_is_likely_fluval():
 
 
 def test_detect_model_plant_not_aquasky():
-    assert detect_model("Plant 3.0_AABBCC", None) == "Plant 3.0 Bluetooth LED"
+    assert detect_model("Plant 3.0_AABBCC", None) == "Plant 3.0_AABBCC"
 
 
 def test_detect_model_plant_nano():
-    assert detect_model("Plant Nano_123", None) == "Plant Nano Bluetooth LED"
+    assert detect_model("Plant Nano_123", None) == "Plant Nano_123"
 
 
 def test_detect_model_from_aquasky_name():
-    assert detect_model("AquaSky3.0_2F3176", None) == "AquaSky 3.0 Bluetooth LED"
+    assert detect_model("AquaSky3.0_2F3176", None) == "AquaSky3.0_2F3176"
 
 
 def test_detect_model_aquasky_2():
-    assert detect_model("AquaSky2.0_ABCD", None) == "AquaSky 2.0 Bluetooth LED"
+    assert detect_model("AquaSky2.0_ABCD", None) == "AquaSky2.0_ABCD"
 
 
 def test_discovery_metadata_stores_protocol_context():
@@ -89,6 +89,6 @@ def test_discovery_metadata_stores_protocol_context():
 
     metadata = discovery_metadata("AquaSky3.0_2F3176", adv)
 
-    assert metadata[CONF_MODEL] == "AquaSky 3.0 Bluetooth LED"
+    assert metadata[CONF_MODEL] == "AquaSky3.0_2F3176"
     assert metadata[CONF_SERVICE_UUIDS] == ["facebd00-7261-6262-6974-696f74626c65"]
     assert metadata[CONF_SERVICE_DATA] == {"facebd00": "0102"}

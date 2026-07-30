@@ -108,44 +108,25 @@ def is_likely_fluval(
 
 
 def detect_model(name: str | None, advertisement: AdvertisementData | None) -> str:
-    """Infer a friendly model name from the BLE advertisement."""
-    display_name = name or ""
-    lowered = display_name.lower()
-    facebd = has_facebd_advertisement(advertisement)
+    """Infer the device model shown in Home Assistant DeviceInfo.
 
-    if "plant" in lowered and name_looks_fluval(display_name):
-        if "nano" in lowered:
-            return "Plant Nano Bluetooth LED"
-        if "3.0" in lowered or "3_" in lowered:
-            return "Plant 3.0 Bluetooth LED"
-        return "Plant Bluetooth LED"
-
-    if "marine" in lowered and name_looks_fluval(display_name):
-        if "3.0" in lowered or "3_" in lowered:
-            return "Marine 3.0 Bluetooth LED"
-        return "Marine Bluetooth LED"
-
-    if "reef" in lowered and name_looks_fluval(display_name):
-        return "Reef Bluetooth LED"
-
-    if "aquasky" in lowered:
-        if facebd or "3.0" in lowered or "3_" in lowered:
-            return "AquaSky 3.0 Bluetooth LED"
-        if "2.0" in lowered or "2_" in lowered:
-            return "AquaSky 2.0 Bluetooth LED"
-        return "AquaSky Bluetooth LED"
-
-    if "fluval" in lowered:
+    Prefer the BLE local name when it looks Fluval-branded — that string is
+    the model/serial the lamp actually advertises (e.g. ``Plant 3.0_AABBCC``)
+    and is what users expect in the device header.
+    """
+    display_name = (name or "").strip()
+    if display_name and name_looks_fluval(display_name):
         return display_name
 
+    facebd = has_facebd_advertisement(advertisement)
     if has_fluval_service_uuid(advertisement):
         if facebd:
-            return "AquaSky 3.0 Bluetooth LED"
-        if has_mesh_advertisement(advertisement) and name_looks_fluval(display_name):
-            return "Fluval Mesh Bluetooth LED"
-        return "Bluetooth LED"
+            return "AquaSky 3.0"
+        if has_mesh_advertisement(advertisement):
+            return "Fluval Mesh"
+        return "Fluval LED"
 
-    return "Unknown Bluetooth LED"
+    return "Unknown Fluval LED"
 
 
 def discovery_metadata(name: str | None, advertisement: AdvertisementData) -> dict[str, Any]:

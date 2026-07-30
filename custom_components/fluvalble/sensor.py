@@ -1,8 +1,8 @@
-"""Sensor platform for Fluval Aquarium LED diagnostics."""
+"""Sensor platform for Fluval Aquarium LED (RSSI / last seen)."""
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, Platform
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -17,18 +17,18 @@ def create_entities(device: Device) -> list:
     return [FluvalSensor(device, sensor) for sensor in device.sensors()]
 
 
-async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_entities: AddEntitiesCallback) -> None:
-    runtime = config_entry.runtime_data
-    device = runtime.device
-
-    if device:
-        add_entities(create_entities(device))
-    else:
-        runtime.pending_add_entities[Platform.SENSOR] = add_entities
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Fluval sensors from a config entry."""
+    del hass
+    add_entities(create_entities(config_entry.runtime_data.device))
 
 
 class FluvalSensor(FluvalEntity, SensorEntity):
-    """Fluval diagnostics sensor."""
+    """Fluval diagnostic sensors (signal strength / last seen)."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
@@ -51,8 +51,6 @@ class FluvalSensor(FluvalEntity, SensorEntity):
             self._attr_native_unit_of_measurement = "dBm"
         elif self.attr == "last_seen":
             self._attr_device_class = SensorDeviceClass.TIMESTAMP
-        elif self.attr == "diagnostics":
-            self._attr_device_class = None
 
         if self.hass:
             self._async_write_ha_state()

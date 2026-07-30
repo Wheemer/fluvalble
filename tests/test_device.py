@@ -1,14 +1,16 @@
 """Tests for Fluval device schedule and channel behavior."""
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from custom_components.fluvalble.core import LAMP_PROFILE_PLANT
+from custom_components.fluvalble.core import encryption, protocol
 from custom_components.fluvalble.core.device import (
     AQUASKY_NUMBERS,
     CHANNEL_NAMES_PLANT,
     Device,
     NUMBERS,
+    WEATHER_EFFECTS,
 )
 
 
@@ -31,6 +33,20 @@ def test_initial_values_include_all_channels():
         assert device.values[channel] == 0
     assert device.values["mode"] == "manual"
     assert device.values["led_on_off"] is False
+
+
+def test_device_honors_configured_wire_dialect():
+    device = _make_device(wire_dialect=encryption.DIALECT_XOR_0E)
+
+    assert device.wire_dialect == encryption.DIALECT_XOR_0E
+    client = device._make_client(MagicMock(address=device.address))
+    assert client.wire_dialect == encryption.DIALECT_XOR_0E
+
+
+def test_device_defaults_unknown_wire_dialect_to_apk_random():
+    device = _make_device(wire_dialect="not-a-dialect")
+
+    assert device.wire_dialect == encryption.DIALECT_RANDOM
 
 
 def test_aquasky_2_exposes_four_color_channels():
@@ -67,20 +83,192 @@ def test_plant_profile_exposes_five_channels_with_plant_labels():
     assert device.uses_plant_spectrum() is True
 
 
-def test_plant_rgb_roundtrip_preview_stays_plausible():
+def test_plant_rgb_commanded_colour_sticks_in_preview():
     device = _make_device(
         name="Fish Tank",
         model="Plant Bluetooth LED",
         lamp_profile=LAMP_PROFILE_PLANT,
     )
-    channels = device.channels_from_rgb((255, 180, 120), 255)
+    channels = device.channels_from_rgb((255, 40, 40), 255)
     device.values.update(channels)
-    preview = device.light_rgb_255()
+    device.values["led_on_off"] = True
+    device.remember_commanded_light(rgb=(255, 40, 40), brightness=255)
 
-    # Warm daylight → warm preview (R high, B lower), not a fake green swatch.
-    assert preview[0] > preview[2]
-    assert channels["channel_1"] > 0  # rose contributes
-    assert channels["channel_5"] > 0  # warm white contributes
+    assert device.light_rgb_255() == (255, 40, 40)
+    assert channels["channel_1"] > channels["channel_2"]
+
+
+def test_plant_colour_uses_only_6804_when_already_manual_and_on():
+    asyncio.run(_async_test_plant_colour_uses_only_6804_when_already_manual_and_on())
+
+
+async def _async_test_plant_colour_uses_only_6804_when_already_manual_and_on():
+    device = _make_device(
+        name="Fish Tank",
+        model="Plant Bluetooth LED",
+        lamp_profile=LAMP_PROFILE_PLANT,
+    )
+    device.values["mode"] = "manual"
+    device.values["led_on_off"] = True
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_packets = AsyncMock(return_value=True)
+
+    assert await device.async_apply_light_channels(device.channels_from_rgb((255, 0, 0), 255))
+
+    packets = device._async_send_packets.await_args.args[0]
+    assert len(packets) == 1
+    assert packets[0][0:2] == bytes((0x68, 0x04))
+
+
+def test_plant_colour_prepares_state_only_when_needed():
+    asyncio.run(_async_test_plant_colour_prepares_state_only_when_needed())
+
+
+async def _async_test_plant_colour_prepares_state_only_when_needed():
+    device = _make_device(
+        name="Fish Tank",
+        model="Plant Bluetooth LED",
+        lamp_profile=LAMP_PROFILE_PLANT,
+    )
+    device.values["mode"] = "automatic"
+    device.values["led_on_off"] = False
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_packets = AsyncMock(return_value=True)
+
+    assert await device.async_apply_light_channels(device.channels_from_rgb((0, 0, 255), 255))
+
+    packets = device._async_send_packets.await_args.args[0]
+    assert [packet[0:2] for packet in packets] == [
+        bytes((0x68, 0x02)),
+        bytes((0x68, 0x03)),
+        bytes((0x68, 0x04)),
+    ]
+
+
+def test_native_weather_effect_uses_apk_680a_packet():
+    asyncio.run(_async_test_native_weather_effect())
+
+
+async def _async_test_native_weather_effect():
+    device = _make_device(name="AquaSky2.0_Test", model="AquaSky 2.0 Bluetooth LED")
+    device.values["mode"] = "manual"
+    device.values["led_on_off"] = False
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_packets = AsyncMock(return_value=True)
+
+    assert await device.async_set_effect("Lightning")
+
+    packets = device._async_send_packets.await_args.args[0]
+    assert packets == [
+        protocol.old_switch_packet(True),
+        protocol.old_weather_effect_packet(2),
+    ]
+    assert device.values["effect"] == "Lightning"
+    assert device.values["led_on_off"] is True
+
+
+def test_aquasky_0103_keeps_all_apk_native_effects_available():
+    device = _make_device(name="AquaSky2.0_Test", model="AquaSky 2.0 Bluetooth LED")
+    device.product_id = 0x0103
+
+    assert device.effect_list() == ["None", *WEATHER_EFFECTS]
+
+
+def test_product_0103_channel_hint_overrides_plant_profile():
+    device = _make_device(
+        name="Fish Fluval LED",
+        model="Bluetooth LED",
+        lamp_profile=LAMP_PROFILE_PLANT,
+    )
+    device.product_id = 0x0103
+    device._channel_count_hint = protocol.channel_count_for_product_id(device.product_id)
+
+    assert device.numbers() == AQUASKY_NUMBERS
+    assert device.light_mode() == "rgbw"
+
+
+def test_stopping_effect_restores_previous_static_channels():
+    asyncio.run(_async_test_stopping_effect_restores_previous_static_channels())
+
+
+async def _async_test_stopping_effect_restores_previous_static_channels():
+    device = _make_device(name="AquaSky2.0_Test", model="AquaSky 2.0 Bluetooth LED")
+    original = {"channel_1": 100, "channel_2": 90, "channel_3": 20, "channel_4": 0}
+    device.values.update(original)
+    device.values["led_on_off"] = True
+    device._effect_restore_channels = dict(original)
+    device.values.update({"channel_1": 10, "channel_2": 100, "channel_3": 10})
+    device.values["effect"] = "Full moon"
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_packets = AsyncMock(return_value=True)
+
+    assert await device.async_stop_effect()
+
+    packets = device._async_send_packets.await_args.args[0]
+    assert packets == [protocol.old_all_zone_packet([100, 90, 20, 0])]
+    assert device.values["effect"] is None
+
+
+def test_effect_active_off_sends_only_apk_switch_packet():
+    asyncio.run(_async_test_effect_active_off_sends_only_apk_switch_packet())
+
+
+async def _async_test_effect_active_off_sends_only_apk_switch_packet():
+    device = _make_device(name="AquaSky2.0_Test", model="AquaSky 2.0 Bluetooth LED")
+    restore = {"channel_1": 10, "channel_2": 20, "channel_3": 30, "channel_4": 40}
+    device.values.update(restore)
+    device.values["led_on_off"] = True
+    device.values["effect"] = "Lightning"
+    device._effect_restore_channels = dict(restore)
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_packets = AsyncMock(return_value=True)
+
+    assert await device.async_fade_off()
+
+    packets = device._async_send_packets.await_args.args[0]
+    assert packets == [protocol.old_switch_packet(False)]
+    assert device.values["led_on_off"] is False
+    assert device.values["effect"] is None
+    assert device.channels_before_off() == restore
+
+
+def test_classic_off_fades_channels_proportionally_to_zero_before_power_off():
+    asyncio.run(_async_test_classic_off_fade())
+
+
+async def _async_test_classic_off_fade():
+    device = _make_device(name="AquaSky2.0_Test", model="AquaSky 2.0 Bluetooth LED")
+    original = {
+        "channel_1": 100,
+        "channel_2": 91,
+        "channel_3": 23,
+        "channel_4": 0,
+    }
+    device.values.update(original)
+    device.values["led_on_off"] = True
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_packets = AsyncMock(return_value=True)
+
+    assert await device.async_fade_off()
+
+    packets = device._async_send_packets.await_args.args[0]
+    assert packets == [
+        protocol.old_all_zone_packet([67, 61, 15, 0]),
+        protocol.old_all_zone_packet([33, 30, 8, 0]),
+        protocol.old_all_zone_packet([0, 0, 0, 0]),
+        protocol.old_switch_packet(False),
+    ]
+    assert device.values["led_on_off"] is False
+    assert device.channels_before_off() == original
+
+    device._async_send_packets.reset_mock()
+    assert await device.async_apply_light_channels(device.channels_before_off())
+    restore_packets = device._async_send_packets.await_args.args[0]
+    assert [packet[0:2] for packet in restore_packets] == [
+        bytes((0x68, 0x03)),
+        bytes((0x68, 0x04)),
+    ]
+    assert device.channels_before_off() is None
 
 
 def test_aquasky_uses_rgbw_light_mode():
@@ -173,6 +361,7 @@ async def _async_test_set_channels_skips_unchanged_targets_before_ble_connect():
             "channel_2": 20,
             "channel_3": 30,
             "channel_4": 40,
+            "led_on_off": True,
         }
     )
     device._async_prepare_command = AsyncMock()
@@ -224,4 +413,23 @@ def test_connection_attribute_uses_reachability_not_gatt_only():
     assert device.attribute("connection")["is_on"] is False
 
     device.connected = True
-    assert device.is_reachable() is True
+    assert device.is_reachable() is False
+    assert device.attribute("connection")["extra"]["gatt_connected"] is True
+
+
+def test_reachability_refresh_notifies_connect_handlers_when_last_seen_expires():
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import MagicMock
+
+    from custom_components.fluvalble.core.device import REACHABLE_SECONDS
+
+    device = _make_device()
+    handler = MagicMock()
+    device.register_update("connection", handler)
+    device.connected = False
+    device.conn_info["last_seen"] = datetime.now(UTC) - timedelta(seconds=REACHABLE_SECONDS + 10)
+
+    device._refresh_reachability_entities()
+
+    handler.assert_called_once()
+    assert device.attribute("connection")["is_on"] is False

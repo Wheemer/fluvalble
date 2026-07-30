@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- Default BLE active connection window increased from 120 s to **300 s**; advertisements extend an open session so commands need fewer cold reconnects.
+- **Reachable** binary sensor now re-evaluates when `last_seen` ages out instead of staying stuck on.
+- **`active_time: 0`** keeps the GATT session connected permanently (connects on integration load).
+- **Reachable** reflects recent BLE advertisements only; `gatt_connected` is still exposed in attributes.
+- Default **`active_time` is 0** (always connected) for local use.
+
+---
+
+## [0.0.32] - 2026-07-21
+
 ### Added
 - Real **light entity** with proper translation: Plant/Marine RGB ↔ Rose/Blue/CW/PW/WW (preview matches mix); AquaSky native RGBW.
 - AquaSky 3.0/FACEBD discovery, diagnostics, and write support.
@@ -24,6 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Options changes reload the integration so ping/active-time take effect.
 
 ### Fixed
+- Restored AquaSky colours remain synchronized with the Home Assistant icon after power-on.
 - Options Configure gear 500 (`OptionsFlow` / missing `config_entry`) — #16.
 - Plant devices mis-identified as AquaSky — #17.
 - AquaSky 3.0 names no longer forced to 4 channels.
