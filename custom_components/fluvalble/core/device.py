@@ -168,6 +168,7 @@ class Device:
         self.updates_connect: list = []
         self.updates_component: list = []
         self._last_diagnostic_update = 0.0
+        self.channel_test_active = False
         self.values = {}
         for channel in NUMBERS:
             self.values[channel] = 0
@@ -882,6 +883,7 @@ class Device:
         *,
         transition: int = 0,
         step_seconds: int = TRANSITION_STEP_SECONDS,
+        force: bool = False,
     ) -> bool:
         """Set multiple channel values, optionally ramping over time."""
         channels = self.numbers()
@@ -889,7 +891,7 @@ class Device:
         if not targets:
             return False
 
-        if all(int(self.values.get(channel, -1)) == value for channel, value in targets.items()):
+        if not force and all(int(self.values.get(channel, -1)) == value for channel, value in targets.items()):
             # Still re-send when the lamp is off — skip only wastes a no-op while on.
             if self.values.get("led_on_off"):
                 _LOGGER.debug("Skipping Fluval channel write because targets are unchanged: %s", targets)
