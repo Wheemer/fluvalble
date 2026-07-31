@@ -1014,11 +1014,11 @@ class Device:
     async def async_shutdown(self) -> None:
         """Tear down BLE and background work for config-entry unload/reload."""
         self._cancel_reachability_refresh()
-        with contextlib.suppress(Exception):
-            await self.async_stop_preview()
+        with contextlib.suppress(Exception, TimeoutError):
+            await asyncio.wait_for(self.async_stop_preview(), timeout=8)
         if self.client is not None:
-            with contextlib.suppress(Exception):
-                await self.client.stop()
+            with contextlib.suppress(Exception, TimeoutError):
+                await asyncio.wait_for(self.client.stop(), timeout=10)
             self.client = None
         self.connected = False
         self.updates_connect.clear()

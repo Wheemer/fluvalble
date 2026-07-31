@@ -157,13 +157,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 def _manifest_version() -> str:
     """Return the installed manifest version for reload fingerprints."""
-    try:
-        import json
-
-        manifest = json.loads((Path(__file__).parent / "manifest.json").read_text(encoding="utf-8"))
-        return str(manifest.get("version", "unknown"))
-    except Exception:  # noqa: BLE001
-        return "unknown"
+    return "0.0.32"
 
 
 def _reload_package_modules() -> None:
@@ -280,12 +274,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
     if hass.state is CoreState.running:
         hass.async_create_task(_async_apply_startup_schedule(hass, entry.entry_id))
     else:
-        entry.async_on_unload(
-            hass.bus.async_listen_once(
-                EVENT_HOMEASSISTANT_STARTED,
-                lambda event: hass.create_task(_async_apply_startup_schedule(hass, entry.entry_id)),
-            )
+        startup_listener_fired = False
+
+        @callback
+        def _apply_startup_schedule_once(_event) -> None:
+            nonlocal startup_listener_fired
+            startup_listener_fired = True
+            hass.create_task(_async_apply_startup_schedule(hass, entry.entry_id))
+
+        remove_startup_listener = hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STARTED,
+            _apply_startup_schedule_once,
         )
+
+        @callback
+        def _remove_pending_startup_listener() -> None:
+            if not startup_listener_fired:
+                remove_startup_listener()
+
+        entry.async_on_unload(_remove_pending_startup_listener)
     if active_time == 0:
         hass.async_create_task(runtime.device.async_start_persistent_connection())
     _LOGGER.info("Device %s ready", mac)

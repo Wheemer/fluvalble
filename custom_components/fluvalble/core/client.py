@@ -113,6 +113,7 @@ class Client:
         self.ping_future: asyncio.Future | None = None
         self.ping_task: asyncio.Task | None = None
         self.ping_time = 0
+        self._stopping = False
 
         self.connect_task: asyncio.Task | None = None
 
@@ -383,6 +384,7 @@ class Client:
 
     def ping(self):
         """Start the ping task to periodically talk to the Fluval."""
+        self._stopping = False
         if self._active_time == 0:
             self.ping_time = float("inf")
         else:
@@ -491,19 +493,22 @@ class Client:
     async def _ping_loop(self):
         """Keep the BLE link warm with periodic wake reads."""
         loop = asyncio.get_event_loop()
-        while time.time() < self.ping_time:
+        while time.time() < self.ping_time and not self._stopping:
             try:
                 client = await self._ensure_client()
 
-                while time.time() < self.ping_time:
+                while time.time() < self.ping_time and not self._stopping:
                     if self.wake_read_uuid:
                         with contextlib.suppress(BleakError):
                             await client.read_gatt_char(self.wake_read_uuid)
 
                     self.ping_future = loop.create_future()
                     loop.call_later(self._ping_interval, self.ping_future.cancel)
-                    with contextlib.suppress(asyncio.CancelledError):
+                    with contextlib.suppress(asyncio.CancelledError, TimeoutError):
                         await self.ping_future
+
+                if self._stopping:
+                    break
 
                 # Idle window expired. Never tear down while a command holds
                 # the lock — extend the window and keep the session.
@@ -525,6 +530,8 @@ class Client:
                         self.status_callback(False)
             except TimeoutError:
                 pass
+            except asyncio.CancelledError:
+                break
             except BleakError as e:
                 _LOGGER.debug("ping error", exc_info=e)
                 self.client = None
@@ -703,13 +710,14 @@ class Client:
         """Disconnect the underlying BLE client without masking the original error."""
         if self.client:
             with contextlib.suppress(Exception):
-                await self.client.disconnect()
+                await asyncio.wait_for(self.client.disconnect(), timeout=5)
             self.client = None
         self._classic_session_ready = False
         self._classic_handshake_done = False
 
     async def disconnect(self):
         """Disconnect from the Fluval and stop background work."""
+        self._stopping = True
         self.ping_time = 0
 
         if self.ping_future:
@@ -717,16 +725,18 @@ class Client:
 
         if self.ping_task:
             self.ping_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.ping_task
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(self.ping_task, timeout=3)
             self.ping_task = None
 
         if self.connect_task:
             self.connect_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.connect_task
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(self.connect_task, timeout=3)
+            self.connect_task = None
 
-        await self._safe_disconnect()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self._safe_disconnect(), timeout=6)
 
         if self.status_callback:
             self.status_callback(False)
