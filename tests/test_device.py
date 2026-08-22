@@ -1,7 +1,7 @@
 """Tests for Fluval device schedule and channel behavior."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from custom_components.fluvalble.core import LAMP_PROFILE_PLANT
 from custom_components.fluvalble.core import encryption, protocol
@@ -425,6 +425,42 @@ def test_connection_attribute_uses_reachability_not_gatt_only():
     device.connected = True
     assert device.is_reachable() is False
     assert device.attribute("connection")["extra"]["gatt_connected"] is True
+
+
+def test_persistent_connection_retries_after_initial_failure():
+    asyncio.run(_async_test_persistent_connection_retries_after_initial_failure())
+
+
+async def _async_test_persistent_connection_retries_after_initial_failure():
+    device = _make_device()
+    device._active_time = 0
+    device._async_prepare_command = AsyncMock(side_effect=[False, True])
+    client = MagicMock()
+    device.client = client
+
+    with patch("custom_components.fluvalble.core.device.asyncio.sleep", new=AsyncMock()) as sleep:
+        await device.async_start_persistent_connection()
+
+    assert device._async_prepare_command.await_count == 2
+    sleep.assert_awaited_once_with(5)
+    client.ping.assert_called_once()
+
+
+def test_start_persistent_connection_schedules_single_task():
+    device = _make_device()
+    device._active_time = 0
+    device.hass = MagicMock()
+    connect_coro = object()
+    task = MagicMock()
+    task.done.return_value = False
+    device.hass.async_create_task.return_value = task
+    device.async_start_persistent_connection = MagicMock(return_value=connect_coro)
+
+    device.start_persistent_connection()
+    device.start_persistent_connection()
+
+    device.hass.async_create_task.assert_called_once_with(connect_coro)
+    assert device._persistent_connect_task is task
 
 
 def test_reachability_refresh_notifies_connect_handlers_when_last_seen_expires():

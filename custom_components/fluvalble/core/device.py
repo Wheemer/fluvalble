@@ -169,6 +169,8 @@ class Device:
             "channel_endian": self.channel_endian,
         }
         self.preview_task: asyncio.Task | None = None
+        self._persistent_connect_task: asyncio.Task | None = None
+        self._shutdown_requested = False
         self.preview_restore_values: dict[str, int] | None = None
         self._clock_synced = False
         self._clock_sync_lock = asyncio.Lock()
@@ -389,12 +391,38 @@ class Device:
         """Connect on startup and keep GATT open when active_time is 0."""
         if self._active_time != 0:
             return
-        if not await self._async_prepare_command():
-            _LOGGER.warning("Fluval persistent connect failed for %s", self.address)
+
+        for attempt in range(1, 4):
+            if self._shutdown_requested:
+                return
+
+            if await self._async_prepare_command():
+                if self.client is not None:
+                    self.client.ping()
+                _LOGGER.info("Fluval persistent BLE session started for %s", self.address)
+                return
+
+            if attempt == 3:
+                _LOGGER.warning("Fluval persistent connect failed for %s after %s attempts", self.address, attempt)
+                return
+
+            delay = min(30, attempt * 5)
+            _LOGGER.warning(
+                "Fluval persistent connect failed for %s; retrying in %ss",
+                self.address,
+                delay,
+            )
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(delay)
+
+    def start_persistent_connection(self) -> None:
+        """Schedule the persistent connection task once for this config entry."""
+        if self._active_time != 0 or self.hass is None:
             return
-        if self.client is not None:
-            self.client.ping()
-        _LOGGER.info("Fluval persistent BLE session started for %s", self.address)
+        if self._persistent_connect_task and not self._persistent_connect_task.done():
+            return
+        self._shutdown_requested = False
+        self._persistent_connect_task = self.hass.async_create_task(self.async_start_persistent_connection())
 
     def command_error_message(self) -> str:
         """Best-effort last BLE error for HomeAssistantError messages."""
@@ -1017,7 +1045,13 @@ class Device:
 
     async def async_shutdown(self) -> None:
         """Tear down BLE and background work for config-entry unload/reload."""
+        self._shutdown_requested = True
         self._cancel_reachability_refresh()
+        if self._persistent_connect_task and not self._persistent_connect_task.done():
+            self._persistent_connect_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(self._persistent_connect_task, timeout=3)
+        self._persistent_connect_task = None
         with contextlib.suppress(Exception, TimeoutError):
             await asyncio.wait_for(self.async_stop_preview(), timeout=8)
         if self.client is not None:

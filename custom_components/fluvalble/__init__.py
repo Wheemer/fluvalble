@@ -294,7 +294,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
 
         entry.async_on_unload(_remove_pending_startup_listener)
     if active_time == 0:
-        hass.async_create_task(runtime.device.async_start_persistent_connection())
+        runtime.device.start_persistent_connection()
     _LOGGER.info("Device %s ready", mac)
     return True
 
