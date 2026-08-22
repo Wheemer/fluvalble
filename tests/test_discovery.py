@@ -45,10 +45,25 @@ def test_facebd_service_uuid_is_likely_fluval():
     assert is_likely_fluval(None, adv)
 
 
-def test_classic_fluval_service_uuid_is_likely_fluval():
+def test_classic_service_uuid_alone_is_not_fluval():
     adv = _advertisement(service_uuids=["00001000-0000-1000-8000-00805f9b34fb"])
 
+    assert not is_likely_fluval(None, adv)
+
+
+def test_classic_fluval_manufacturer_payload_is_likely_fluval():
+    adv = _advertisement(
+        service_uuids=["00001000-0000-1000-8000-00805f9b34fb"],
+        manufacturer_data={12592: bytes.fromhex("3438303130330000000000000000000000000000")},
+    )
+
     assert is_likely_fluval(None, adv)
+
+
+def test_veepeak_obd2_is_not_fluval_even_with_classic_uuid():
+    adv = _advertisement(service_uuids=["00001000-0000-1000-8000-00805f9b34fb"])
+
+    assert not is_likely_fluval("VEEPEAK", adv)
 
 
 def test_mesh_service_uuid_alone_is_not_fluval():

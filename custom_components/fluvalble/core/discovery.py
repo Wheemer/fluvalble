@@ -7,6 +7,8 @@ from typing import Any
 
 from bleak import AdvertisementData
 
+from .protocol import product_id_from_manufacturer_data
+
 # Reserved for future manufacturer-id matching (currently unused / empty so we
 # never treat random BLE vendors as Fluval lights).
 FLUVAL_MANUFACTURER_IDS: set[int] = set()
@@ -17,6 +19,18 @@ FLUVAL_SERVICE_UUIDS = frozenset(
     {
         "00001000-0000-1000-8000-00805f9b34fb",
         "00001002-0000-1000-8000-00805f9b34fb",
+        "facebd00-7261-6262-6974-696f74626c65",
+        "facebd00-0000-1000-8000-00805f9b34fb",
+    }
+)
+CLASSIC_FLUVAL_SERVICE_UUIDS = frozenset(
+    {
+        "00001000-0000-1000-8000-00805f9b34fb",
+        "00001002-0000-1000-8000-00805f9b34fb",
+    }
+)
+FACEBD_FLUVAL_SERVICE_UUIDS = frozenset(
+    {
         "facebd00-7261-6262-6974-696f74626c65",
         "facebd00-0000-1000-8000-00805f9b34fb",
     }
@@ -69,14 +83,22 @@ def has_mesh_advertisement(advertisement: AdvertisementData | None) -> bool:
 
 
 def has_fluval_service_uuid(advertisement: AdvertisementData | None) -> bool:
-    """Return whether a known Fluval service UUID is advertised."""
+    """Return whether a strong Fluval service/manufacturer signal is advertised."""
     if advertisement is None:
         return False
     keys = _advertised_protocol_keys(advertisement)
-    if any(key in FLUVAL_SERVICE_UUIDS for key in keys):
+
+    # FACEBD UUID variants are Fluval-specific enough to match on their own.
+    if any(key in FACEBD_FLUVAL_SERVICE_UUIDS or key.startswith("facebd") for key in keys):
         return True
-    # FACEBD UUID variants all start with facebd — unique enough for Fluval.
-    return any(key.startswith("facebd") for key in keys)
+
+    # The classic 00001000/00001002 UUIDs are not unique in the wild; at least
+    # one VEEPEAK OBD2 dongle advertises 00001000 and was falsely discovered as
+    # a Fluval light. Require the APK-known Fluval manufacturer payload too.
+    if any(key in CLASSIC_FLUVAL_SERVICE_UUIDS for key in keys):
+        return product_id_from_manufacturer_data(advertisement.manufacturer_data) is not None
+
+    return False
 
 
 def name_looks_fluval(name: str | None) -> bool:
