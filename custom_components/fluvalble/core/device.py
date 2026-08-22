@@ -31,9 +31,12 @@ from .discovery import (
     detect_model,
     name_looks_fluval,
 )
+from .effects import EFFECT_NONE, WEATHER_EFFECTS, effect_id, effect_list
 from . import encryption, protocol
 
 _LOGGER = logging.getLogger(__name__)
+
+__all__ = ["Device", "EFFECT_NONE", "WEATHER_EFFECTS"]
 
 # Connectivity binary sensor: treat as reachable if seen within this window
 # (idle GATT disconnect after active_time is expected, not a failure).
@@ -61,22 +64,6 @@ CHANNEL_NAMES_PLANT = {
 CHANNEL_NAMES = CHANNEL_NAMES_AQUASKY
 MODES = ["manual", "automatic", "professional"]
 MODE_TO_CODE = {mode: index for index, mode in enumerate(MODES)}
-# FluvalConnect weather icons map to these classic 0x680A effect IDs.
-# The APK presents them in a different order: 9,10,11,5,6,7,8,1,2,3,4.
-WEATHER_EFFECTS = {
-    "Thunderstorm": 1,
-    "Lightning": 2,
-    "Sun and lightning": 3,
-    "Colour cycle": 4,
-    "Mostly sunny": 5,
-    "Partly sunny": 6,
-    "Partly cloudy": 7,
-    "Mostly cloudy": 8,
-    "Full moon": 9,
-    "Half moon": 10,
-    "Crescent moon": 11,
-}
-EFFECT_NONE = "None"
 DIAGNOSTIC_UPDATE_INTERVAL = 5
 BLE_LOOKUP_TIMEOUT = 10
 BLE_LOOKUP_RETRIES = 3
@@ -700,18 +687,48 @@ class Device:
 
     def effect_list(self) -> list[str]:
         """Return native live weather effects found in FluvalConnect."""
-        return [EFFECT_NONE, *WEATHER_EFFECTS]
+        return effect_list()
+
+    def _channel_snapshot(self) -> dict[str, int]:
+        """Return the current supported channel values keyed by HA channel name."""
+        return {channel: int(self.values.get(channel, 0)) for channel in self.numbers()}
+
+    def _remember_static_channels_before_effect(self) -> None:
+        """Capture the current static mix before entering a native effect."""
+        if self.values.get("effect"):
+            return
+
+        static_channels = self._channel_snapshot()
+        if any(static_channels.values()):
+            self._effect_restore_channels = static_channels
+
+    def _channels_after_effect(self) -> dict[str, int]:
+        """Return the static channel mix to restore when leaving an effect."""
+        targets = self._effect_restore_channels or self._channel_snapshot()
+        if any(targets.values()):
+            return dict(targets)
+
+        targets = {channel: 0 for channel in self.numbers()}
+        targets["channel_4"] = 100
+        return targets
+
+    def _classic_effect_packets(self, classic_effect_id: int) -> list[bytes]:
+        """Build the APK-equivalent packet sequence for a native effect."""
+        packets: list[bytes] = []
+        if self.values.get("mode") != "manual":
+            packets.append(self._mode_packet(MODE_TO_CODE["manual"]))
+        if not self.values.get("led_on_off"):
+            packets.append(self._switch_packet(True))
+        packets.append(protocol.old_weather_effect_packet(classic_effect_id))
+        return packets
 
     async def async_set_effect(self, effect: str) -> bool:
         """Start one APK-native classic weather effect."""
-        effect_id = WEATHER_EFFECTS.get(effect)
-        if effect_id is None:
+        classic_effect_id = effect_id(effect)
+        if classic_effect_id is None:
             return False
         old_values = dict(self.values)
-        if not self.values.get("effect"):
-            static_channels = {channel: int(self.values.get(channel, 0)) for channel in self.numbers()}
-            if any(static_channels.values()):
-                self._effect_restore_channels = static_channels
+        self._remember_static_channels_before_effect()
         if not await self._async_prepare_command():
             _LOGGER.warning("Cannot set Fluval effect before BLE device is available")
             return False
@@ -719,12 +736,7 @@ class Device:
             _LOGGER.warning("Classic weather effects are not valid for this Fluval transport")
             return False
 
-        packets: list[bytes] = []
-        if self.values.get("mode") != "manual":
-            packets.append(self._mode_packet(MODE_TO_CODE["manual"]))
-        if not self.values.get("led_on_off"):
-            packets.append(self._switch_packet(True))
-        packets.append(protocol.old_weather_effect_packet(effect_id))
+        packets = self._classic_effect_packets(classic_effect_id)
 
         self.values["mode"] = "manual"
         self.values["led_on_off"] = True
@@ -732,7 +744,7 @@ class Device:
         _LOGGER.info(
             "Fluval native effect %s id=%s packets=%s",
             effect,
-            effect_id,
+            classic_effect_id,
             [packet.hex() for packet in packets],
         )
         if not await self._async_send_packets(packets):
@@ -743,13 +755,7 @@ class Device:
 
     async def async_stop_effect(self) -> bool:
         """Return from a native effect to the previous static channel mix."""
-        targets = self._effect_restore_channels or {
-            channel: int(self.values.get(channel, 0)) for channel in self.numbers()
-        }
-        if not any(targets.values()):
-            targets = {channel: 0 for channel in self.numbers()}
-            targets["channel_4"] = 100
-        return await self.async_apply_light_channels(targets)
+        return await self.async_apply_light_channels(self._channels_after_effect())
 
     def channels_before_off(self) -> dict[str, int] | None:
         """Return the channel mix saved by the software OFF fade."""
@@ -770,9 +776,7 @@ class Device:
         # here uses stale pre-effect channel values and can fail to stop the
         # controller's autonomous effect engine.
         if self.values.get("effect"):
-            restore = self._effect_restore_channels or {
-                channel: int(self.values.get(channel, 0)) for channel in self.numbers()
-            }
+            restore = self._channels_after_effect()
             if any(restore.values()):
                 self._off_restore_channels = dict(restore)
             ok = await self.async_set_switch("led_on_off", False)

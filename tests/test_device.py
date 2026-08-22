@@ -9,9 +9,11 @@ from custom_components.fluvalble.core.device import (
     AQUASKY_NUMBERS,
     CHANNEL_NAMES_PLANT,
     Device,
+    EFFECT_NONE,
     NUMBERS,
     WEATHER_EFFECTS,
 )
+from custom_components.fluvalble.core.effects import effect_id, effect_list
 
 
 def _make_device(name="AquaSky3.0_Test", model="AquaSky Bluetooth LED", **config):
@@ -172,6 +174,14 @@ def test_aquasky_0103_keeps_all_apk_native_effects_available():
     device.product_id = 0x0103
 
     assert device.effect_list() == ["None", *WEATHER_EFFECTS]
+
+
+def test_classic_weather_effect_catalog_is_stable():
+    assert effect_list() == [EFFECT_NONE, *WEATHER_EFFECTS]
+    assert effect_id("Lightning") == 2
+    assert effect_id("Colour cycle") == 4
+    assert effect_id("Full moon") == 9
+    assert effect_id("Not a Fluval effect") is None
 
 
 def test_product_0103_channel_hint_overrides_plant_profile():
