@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import importlib
 import inspect
 import logging
@@ -47,7 +47,8 @@ _LOGGER = logging.getLogger(__name__)
 class FluvalRuntimeData:
     """Runtime state for one Fluval config entry (stored on entry.runtime_data)."""
 
-    device: Device
+    device: Device | None
+    auto_schedule_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 try:
@@ -60,6 +61,8 @@ SERVICE_SET_CHANNELS = "set_channels"
 SERVICE_PREVIEW_SCHEDULE = "preview_schedule"
 SERVICE_STOP_PREVIEW = "stop_preview"
 SERVICE_SAVE_SCHEDULE = "save_schedule"
+SERVICE_SET_NATIVE_AUTO_SCHEDULE = "set_native_auto_schedule"
+SERVICE_SET_NATIVE_PRO_SCHEDULE = "set_native_pro_schedule"
 SERVICES_REGISTERED = "services_registered"
 STATIC_REGISTERED = "static_registered"
 WEBSOCKET_REGISTERED = "websocket_registered"
@@ -71,6 +74,9 @@ STARTUP_SCHEDULE_RETRY_COUNT = 12
 MAX_SCHEDULE_POINTS = 96
 SCHEDULE_CHANNELS = ("red", "green", "blue", "white", "channel_5")
 SCHEDULE_POINT_FIELDS = {"time", *SCHEDULE_CHANNELS}
+NATIVE_AUTO_TIME_FIELDS = {"hour", "minute"}
+NATIVE_AUTO_TIME_RAMP_FIELDS = {*NATIVE_AUTO_TIME_FIELDS, "ramp"}
+NATIVE_LEVEL_FIELDS = tuple(f"channel_{index}" for index in range(1, 6))
 LEGACY_ENTITY_UNIQUE_ID_SUFFIXES = ("_diagnostics", "_refresh_diagnostics")
 
 
@@ -96,6 +102,46 @@ def _validate_schedule_points(points: object) -> list[dict]:
         validated.append(validated_point)
 
     return validated
+
+
+def _validate_time_dict(value: object, *, ramp: bool = False) -> dict:
+    """Validate a native Plant Pro schedule time object."""
+    fields = NATIVE_AUTO_TIME_RAMP_FIELDS if ramp else NATIVE_AUTO_TIME_FIELDS
+    if not isinstance(value, dict) or set(value) - fields:
+        raise vol.Invalid("Time must contain hour/minute" + ("/ramp" if ramp else ""))
+    hour = value.get("hour")
+    minute = value.get("minute")
+    if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23:
+        raise vol.Invalid("hour must be an integer from 0 to 23")
+    if isinstance(minute, bool) or not isinstance(minute, int) or not 0 <= minute <= 59:
+        raise vol.Invalid("minute must be an integer from 0 to 59")
+    result = {"hour": hour, "minute": minute}
+    if ramp:
+        ramp_value = value.get("ramp", 0)
+        if isinstance(ramp_value, bool) or not isinstance(ramp_value, int) or not 0 <= ramp_value <= 255:
+            raise vol.Invalid("ramp must be an integer from 0 to 255")
+        result["ramp"] = ramp_value
+    return result
+
+
+def _validate_level_dict(value: object) -> dict:
+    """Validate a five-channel native Plant Pro level object."""
+    if not isinstance(value, dict) or set(value) - set(NATIVE_LEVEL_FIELDS):
+        raise vol.Invalid("Levels must contain channel_1 through channel_5 values")
+    result = {}
+    for channel in NATIVE_LEVEL_FIELDS:
+        level = value.get(channel, 0)
+        if isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= 100:
+            raise vol.Invalid(f"{channel} must be an integer from 0 to 100")
+        result[channel] = level
+    return result
+
+
+def _validate_sleep_time(value: object) -> dict | None:
+    """Validate nullable native Auto sleep time."""
+    if value is None:
+        return None
+    return _validate_time_dict(value, ramp=False)
 
 
 CHANNEL_SERVICE_SCHEMA = vol.Schema(
@@ -135,6 +181,28 @@ SCHEDULE_SERVICE_SCHEMA = vol.Schema(
         vol.Optional("mac"): str,
         vol.Required("points"): _validate_schedule_points,
         vol.Optional("mode"): vol.In(["manual", "auto", "professional"]),
+    }
+)
+
+NATIVE_AUTO_SCHEDULE_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+        vol.Optional("mac"): str,
+        vol.Required("sunrise"): lambda value: _validate_time_dict(value, ramp=True),
+        vol.Required("sunset"): lambda value: _validate_time_dict(value, ramp=True),
+        vol.Optional("sleep"): _validate_sleep_time,
+        vol.Required("day_levels"): _validate_level_dict,
+        vol.Required("night_levels"): _validate_level_dict,
+        vol.Optional("activate", default=True): bool,
+    }
+)
+
+NATIVE_PRO_SCHEDULE_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+        vol.Optional("mac"): str,
+        vol.Required("points"): _validate_schedule_points,
+        vol.Optional("activate", default=True): bool,
     }
 )
 
@@ -446,6 +514,31 @@ def _register_services(hass: HomeAssistant) -> None:
             mode=call.data.get("mode"),
         )
 
+    async def async_set_native_auto_schedule(call: ServiceCall) -> None:
+        device = get_device(call)
+        sunrise = call.data["sunrise"]
+        sunset = call.data["sunset"]
+        sleep = call.data.get("sleep")
+        ok = await device.async_set_native_auto_schedule(
+            sunrise=(sunrise["hour"], sunrise["minute"], sunrise["ramp"]),
+            sunset=(sunset["hour"], sunset["minute"], sunset["ramp"]),
+            sleep=None if sleep is None else (sleep["hour"], sleep["minute"]),
+            day_levels=[call.data["day_levels"][channel] for channel in NATIVE_LEVEL_FIELDS],
+            night_levels=[call.data["night_levels"][channel] for channel in NATIVE_LEVEL_FIELDS],
+            activate=call.data["activate"],
+        )
+        if not ok:
+            raise HomeAssistantError(device.command_error_message())
+
+    async def async_set_native_pro_schedule(call: ServiceCall) -> None:
+        device = get_device(call)
+        ok = await device.async_set_native_pro_schedule(
+            call.data["points"],
+            activate=call.data["activate"],
+        )
+        if not ok:
+            raise HomeAssistantError(device.command_error_message())
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_SET_CHANNELS,
@@ -469,6 +562,18 @@ def _register_services(hass: HomeAssistant) -> None:
         SERVICE_SAVE_SCHEDULE,
         async_save_schedule,
         schema=SCHEDULE_SERVICE_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_NATIVE_AUTO_SCHEDULE,
+        async_set_native_auto_schedule,
+        schema=NATIVE_AUTO_SCHEDULE_SERVICE_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_NATIVE_PRO_SCHEDULE,
+        async_set_native_pro_schedule,
+        schema=NATIVE_PRO_SCHEDULE_SERVICE_SCHEMA,
     )
     hass.data[DOMAIN][SERVICES_REGISTERED] = True
 
@@ -610,6 +715,8 @@ def _device_for_entry(hass: HomeAssistant, entry_id: str) -> Device | None:
             return runtime.device
 
     entry_data = hass.data.get(DOMAIN, {}).get(entry_id)
+    if isinstance(entry_data, FluvalRuntimeData):
+        return entry_data.device if isinstance(entry_data.device, Device) else None
     if isinstance(entry_data, dict):
         device = entry_data.get("device")
         if isinstance(device, Device):
@@ -720,7 +827,10 @@ async def _async_apply_auto_schedule(hass: HomeAssistant, entry_id: str) -> bool
 async def _async_run_auto_schedule(hass: HomeAssistant, entry_id: str) -> bool:
     """Run the auto schedule without allowing a timer exception to be lost."""
     entry_data = hass.data.get(DOMAIN, {}).setdefault(entry_id, {})
-    lock = entry_data.setdefault("auto_schedule_lock", asyncio.Lock())
+    if isinstance(entry_data, FluvalRuntimeData):
+        lock = entry_data.auto_schedule_lock
+    else:
+        lock = entry_data.setdefault("auto_schedule_lock", asyncio.Lock())
     try:
         async with lock:
             return await _async_apply_auto_schedule(hass, entry_id)

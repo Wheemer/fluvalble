@@ -68,6 +68,7 @@ class FluvalLight(FluvalEntity, LightEntity):
     def internal_update(self) -> None:
         # Stay available when idle-disconnected so the UI isn't grayed out.
         self._attr_available = True
+        self._attr_effect_list = self.device.effect_list()
         # Follow LED power — Automatic/Professional zero channel values in the
         # status packet, so brightness must not gate is_on.
         self._attr_is_on = bool(self.device.values.get("led_on_off"))

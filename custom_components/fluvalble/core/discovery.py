@@ -37,16 +37,16 @@ FACEBD_FLUVAL_SERVICE_UUIDS = frozenset(
 )
 
 # Name tokens that are Fluval-branded on their own.
-_FLUVAL_BRAND_NAMES = ("fluval", "aquasky")
+_FLUVAL_BRAND_NAMES = ("fluval", "aquasky", "plantpro")
 
 # Plant/Marine/Reef Fluval advertisements look like "Plant 3.0_AABB", not
 # arbitrary "plant sensor" / "marine radio" devices. Require a Fluval-style
 # suffix (version, Nano, or underscore/hyphen serial).
 _SERIES_NAME_RE = re.compile(
-    r"^(plant|marine|reef)"
+    r"^(plant\s*pro|plant|marine|reef)"
     r"(?:"
     r"\s*nano|"
-    r"\s*[23](?:\.0)?|"
+    r"\s*(?:pro|[234](?:\.0)?)|"
     r"[_\-]"
     r").+",
     re.IGNORECASE,

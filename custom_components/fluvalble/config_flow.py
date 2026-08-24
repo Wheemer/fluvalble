@@ -30,6 +30,7 @@ from .core import (
     LAMP_PROFILE_AQUASKY3,
     LAMP_PROFILE_AUTO,
     LAMP_PROFILE_PLANT,
+    LAMP_PROFILE_PLANT_PRO,
     WIRE_DIALECT_RANDOM,
     WIRE_DIALECT_RAND0,
     WIRE_DIALECT_XOR_0E,
@@ -268,7 +269,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if mac in configured_normalized:
                 continue
             options[mac] = _device_display_name(info, is_fluval=True)
-        options[MANUAL_ENTRY] = "My device isn't in the list ÔÇö enter MAC address manually"
+        options[MANUAL_ENTRY] = "My device isn't in the list - enter MAC address manually"
         return options
 
     async def async_step_manual(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -328,7 +329,8 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
                 ): vol.In(
                     {
                         LAMP_PROFILE_AUTO: "Auto-detect from BLE name / protocol",
-                        LAMP_PROFILE_PLANT: "Plant / Marine 5-channel (RoseÔÇôWarm White)",
+                        LAMP_PROFILE_PLANT: "Plant / Marine 5-channel (Rose-Warm White)",
+                        LAMP_PROFILE_PLANT_PRO: "Plant Pro / Plant 4.0 (Red-Amber)",
                         LAMP_PROFILE_AQUASKY: "AquaSky 2.0 (4-channel RGBW)",
                         LAMP_PROFILE_AQUASKY3: "AquaSky 3.0 / FACEBD (5-channel)",
                     }

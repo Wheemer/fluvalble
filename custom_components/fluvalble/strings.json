@@ -41,7 +41,7 @@
           "active_time": "Active connection window (seconds)"
         },
         "data_description": {
-          "lamp_profile": "Override auto-detection when colour mode or spectrum is wrong. Plant uses RGB translated to Rose / Blue / Cold White / Pure White / Warm White.",
+          "lamp_profile": "Override auto-detection when colour mode or spectrum is wrong. Plant uses RGB translated to Rose / Blue / Cold White / Pure White / Warm White; Plant Pro / 4.0 uses Red / Blue / Cool White / Warm White / Amber.",
           "wire_dialect": "FluvalConnect random-key encoding is correct for current OLD-protocol lights. Select a legacy encoding only for a controller known to require it.",
           "ping_interval": "How often Home Assistant reads from the light to keep the BLE connection alive. Lower values improve reliability at the cost of slightly more radio traffic. Default: 10 s.",
           "active_time": "How long to keep an active BLE GATT session after the last command. Use 0 to stay connected permanently. Reachable follows BLE advertisements only. Default: 0 (always connected)."

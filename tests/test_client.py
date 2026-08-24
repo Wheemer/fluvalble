@@ -96,6 +96,51 @@ async def _async_test_classic_service_pins_apk_1001_and_1002_characteristics():
     assert client.raw_facebd is False
 
 
+def test_mesh_service_pins_apk_fff2_and_fff1_when_old_service_is_also_present():
+    asyncio.run(_async_test_mesh_service_pins_apk_fff2_and_fff1_when_old_service_is_also_present())
+
+
+async def _async_test_mesh_service_pins_apk_fff2_and_fff1_when_old_service_is_also_present():
+    client = _make_client()
+    old_write = SimpleNamespace(
+        uuid="00001001-0000-1000-8000-00805f9b34fb",
+        properties=["write", "write-without-response"],
+    )
+    old_notify = SimpleNamespace(
+        uuid="00001002-0000-1000-8000-00805f9b34fb",
+        properties=["notify"],
+    )
+    mesh_write = SimpleNamespace(
+        uuid="0000fff2-0000-1000-8000-00805f9b34fb",
+        properties=["write", "write-without-response"],
+    )
+    mesh_notify = SimpleNamespace(
+        uuid="0000fff1-0000-1000-8000-00805f9b34fb",
+        properties=["notify"],
+    )
+    by_uuid = {
+        old_write.uuid.lower(): old_write,
+        old_notify.uuid.lower(): old_notify,
+        mesh_write.uuid.lower(): mesh_write,
+        mesh_notify.uuid.lower(): mesh_notify,
+    }
+    services = MagicMock()
+    services.__iter__.return_value = iter(
+        [
+            SimpleNamespace(uuid="00001000-0000-1000-8000-00805f9b34fb"),
+            SimpleNamespace(uuid="0000fff0-0000-1000-8000-00805f9b34fb"),
+        ]
+    )
+    services.get_characteristic.side_effect = lambda uuid: by_uuid.get(uuid.lower())
+    client.client = SimpleNamespace(services=services)
+
+    await client._resolve_characteristics()
+
+    assert client.command_write_uuid == mesh_write.uuid
+    assert client.notify_uuids == [mesh_notify.uuid]
+    assert client.raw_mesh is True
+
+
 def test_old_protocol_notify_callback_ignores_empty_decrypt():
     client = _make_client()
     update_callback = MagicMock()

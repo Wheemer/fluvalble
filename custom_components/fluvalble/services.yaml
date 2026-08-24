@@ -176,3 +176,116 @@ save_schedule:
             - manual
             - auto
             - professional
+
+set_native_auto_schedule:
+  name: Set native Plant Pro Auto schedule
+  description: Write a native Plant Pro / 4.0 Auto sunrise/sunset schedule into the fixture.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: Optional config entry ID when more than one Fluval light is configured.
+      selector:
+        text:
+    mac:
+      name: MAC address
+      description: Optional Bluetooth MAC address when more than one Fluval light is configured.
+      selector:
+        text:
+    sunrise:
+      name: Sunrise
+      description: Object with hour, minute, and ramp duration in minutes.
+      required: true
+      example:
+        hour: 8
+        minute: 0
+        ramp: 60
+      selector:
+        object:
+    sunset:
+      name: Sunset
+      description: Object with hour, minute, and ramp duration in minutes; this is when ramp-down finishes.
+      required: true
+      example:
+        hour: 21
+        minute: 0
+        ramp: 60
+      selector:
+        object:
+    sleep:
+      name: Sleep
+      description: Optional object with hour and minute for full off; omit/null to disable sleep-off.
+      example:
+        hour: 22
+        minute: 30
+      selector:
+        object:
+    day_levels:
+      name: Day levels
+      description: Five Plant Pro channel levels, 0-100.
+      required: true
+      example:
+        channel_1: 80
+        channel_2: 80
+        channel_3: 80
+        channel_4: 80
+        channel_5: 80
+      selector:
+        object:
+    night_levels:
+      name: Night levels
+      description: Five Plant Pro channel levels, 0-100.
+      required: true
+      example:
+        channel_1: 0
+        channel_2: 10
+        channel_3: 0
+        channel_4: 0
+        channel_5: 0
+      selector:
+        object:
+    activate:
+      name: Activate Auto mode
+      description: Switch the fixture to Auto after writing the schedule.
+      default: true
+      selector:
+        boolean:
+
+set_native_pro_schedule:
+  name: Set native Plant Pro Professional schedule
+  description: Write native Plant Pro / 4.0 Professional schedule points into the fixture.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: Optional config entry ID when more than one Fluval light is configured.
+      selector:
+        text:
+    mac:
+      name: MAC address
+      description: Optional Bluetooth MAC address when more than one Fluval light is configured.
+      selector:
+        text:
+    points:
+      name: Schedule points
+      description: List of points with time plus red, green, blue, white, and optional channel_5 values.
+      required: true
+      example:
+        - time: "08:00"
+          red: 0
+          green: 0
+          blue: 0
+          white: 0
+          channel_5: 0
+        - time: "12:00"
+          red: 60
+          green: 60
+          blue: 60
+          white: 60
+          channel_5: 60
+      selector:
+        object:
+    activate:
+      name: Activate Pro mode
+      description: Switch the fixture to Professional after writing the schedule.
+      default: true
+      selector:
+        boolean:

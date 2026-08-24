@@ -45,6 +45,7 @@ BLE_COMMAND_WRITE_UUIDS = (
     "00001001-0000-1000-8000-00805F9B34FB",
     "0000FFF2-0000-1000-8000-00805F9B34FB",
 )
+MESH_COMMAND_WRITE_UUIDS = ("0000FFF2-0000-1000-8000-00805F9B34FB",)
 CLASSIC_COMMAND_WRITE_UUIDS = ("00001001-0000-1000-8000-00805F9B34FB",)
 # facebd02 is intentionally excluded: it is the BLE read/notify char, not the
 # WiFi CBOR write target used by on/off/mode/channel packets.
@@ -59,12 +60,12 @@ NOTIFY_UUIDS = (
     "00001002-0000-1000-8000-00805F9B34FB",
     "0000FFF1-0000-1000-8000-00805F9B34FB",
 )
+MESH_NOTIFY_UUIDS = ("0000FFF1-0000-1000-8000-00805F9B34FB",)
 CLASSIC_NOTIFY_UUIDS = ("00001002-0000-1000-8000-00805F9B34FB",)
 INIT_WRITE_UUIDS = (
     "FACEBD01-7261-6262-6974-696F74626C65",
     "FACEBD01-0000-1000-8000-00805F9B34FB",
     "00001001-0000-1000-8000-00805F9B34FB",
-    "0000FFF2-0000-1000-8000-00805F9B34FB",
 )
 # FluvalConnect BleKxtKt.setNotificationToOldBle requests MTU 220.
 CLASSIC_MTU = 220
@@ -232,8 +233,15 @@ class Client:
         # FluvalConnect routes LightType.OLD exclusively through service 1000,
         # write 1001, notify 1002. Do not let unrelated vendor characteristics
         # win merely because they appear earlier in a generic candidate list.
-        write_candidates = CLASSIC_COMMAND_WRITE_UUIDS if has_old else COMMAND_WRITE_UUIDS
-        notify_candidates = CLASSIC_NOTIFY_UUIDS if has_old else NOTIFY_UUIDS
+        if has_mesh:
+            write_candidates = MESH_COMMAND_WRITE_UUIDS
+            notify_candidates = MESH_NOTIFY_UUIDS
+        elif has_old:
+            write_candidates = CLASSIC_COMMAND_WRITE_UUIDS
+            notify_candidates = CLASSIC_NOTIFY_UUIDS
+        else:
+            write_candidates = COMMAND_WRITE_UUIDS
+            notify_candidates = NOTIFY_UUIDS
         self.command_write_uuids = self._find_characteristics(write_candidates, require_write=True)
         if not self.command_write_uuids:
             raise BleakError(f"None of the command UUIDs are available: {write_candidates}")

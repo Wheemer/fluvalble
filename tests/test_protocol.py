@@ -105,6 +105,89 @@ def test_mesh_channels_and_clock():
     ]
 
 
+def test_plant_pro_mesh_switch_packets_match_reference_capture():
+    assert protocol.mesh_switch_packet(True) == bytes.fromhex("d1 a1 02 f5")
+    assert protocol.mesh_switch_packet(False) == bytes.fromhex("d1 a1 02 f4")
+
+
+def test_plant_pro_mesh_mode_packets_match_reference_capture():
+    assert protocol.mesh_mode_packet(0) == bytes.fromhex("d1 a1 01 00")
+    assert protocol.mesh_mode_packet(1) == bytes.fromhex("d1 a1 01 01")
+    assert protocol.mesh_mode_packet(2) == bytes.fromhex("d1 a1 01 02")
+
+
+def test_plant_pro_mesh_all_zone_packet_matches_reference_shape():
+    packet = protocol.mesh_all_zone_packet([100, 20, 30, 40, 50])
+
+    assert packet == bytes.fromhex("d1 a6 03 18 64 04 14 05 18 1e 06 18 28 07 18 32 0e 00")
+    assert protocol.decode_cbor_update(packet) == {
+        protocol.MESH_CHANNEL_KEYS[0]: 100,
+        protocol.MESH_CHANNEL_KEYS[1]: 20,
+        protocol.MESH_CHANNEL_KEYS[2]: 30,
+        protocol.MESH_CHANNEL_KEYS[3]: 40,
+        protocol.MESH_CHANNEL_KEYS[4]: 50,
+        protocol.MESH_MANUAL_KEY: 0,
+    }
+
+
+def test_plant_pro_mesh_weather_effect_packet_matches_apk_shape():
+    packet = protocol.mesh_weather_effect_packet(4)
+
+    assert packet == bytes.fromhex("d1 a1 0e 04")
+    assert protocol.decode_cbor_update(packet) == {protocol.MESH_WEATHER_KEY: 4}
+
+
+def test_plant_pro_mesh_auto_schedule_packet_matches_apk_keys():
+    packet = protocol.mesh_auto_schedule_packet(
+        sunrise=(8, 0, 60),
+        sunset=(21, 0, 45),
+        sleep=None,
+        day_levels=[80, 70, 60, 50, 40],
+        night_levels=[0, 10, 0, 0, 0],
+    )
+
+    decoded = protocol.decode_cbor_update(packet)
+
+    assert decoded[protocol.MESH_AUTO_SUNRISE_KEY] == bytes([8, 0, 60])
+    assert decoded[protocol.MESH_AUTO_SUNSET_KEY] == bytes([21, 0, 45])
+    assert decoded[protocol.MESH_AUTO_SLEEP_KEY] == bytes([0xFF, 0xFF])
+    assert decoded[protocol.MESH_AUTO_DAY_LEVELS_KEY] == bytes([80, 70, 60, 50, 40])
+    assert decoded[protocol.MESH_AUTO_NIGHT_LEVELS_KEY] == bytes([0, 10, 0, 0, 0])
+
+
+def test_plant_pro_mesh_pro_schedule_packet_matches_apk_blob_shape():
+    packet = protocol.mesh_pro_schedule_packet(
+        [
+            {"minute": 8 * 60, "channel_1": 1, "channel_2": 2, "channel_3": 3, "channel_4": 4, "channel_5": 5},
+            {
+                "minute": 12 * 60 + 30,
+                "channel_1": 10,
+                "channel_2": 20,
+                "channel_3": 30,
+                "channel_4": 40,
+                "channel_5": 50,
+            },
+        ]
+    )
+
+    decoded = protocol.decode_cbor_update(packet)
+
+    assert decoded[protocol.MESH_PRO_SCHEDULE_KEY] == bytes([2, 8, 0, 1, 2, 3, 4, 5, 12, 30, 10, 20, 30, 40, 50])
+
+
+def test_plant_pro_mesh_status_strips_d2_header_and_keeps_schedule_blobs():
+    status = bytes.fromhex(
+        "d2 aa 00 0e 01 00 02 f5 03 18 64 04 18 64 05 18 64 06 18 64 07 18 64 08 43 0d 00 a0 09 43 15 03 26"
+    )
+
+    decoded = protocol.decode_cbor_update(status)
+
+    assert decoded[protocol.MESH_MODE_KEY] == 0
+    assert decoded[protocol.MESH_SWITCH_KEY] is True
+    assert decoded[protocol.MESH_CHANNEL_KEYS[0]] == 100
+    assert decoded[8] == bytes.fromhex("0d00a0")
+
+
 def test_cbor_signed_timezone_offset():
     packet = protocol.cbor_map({protocol.WIFI_TZ_OFFSET_KEY: -150})
     decoded = protocol.decode_cbor_map(packet)

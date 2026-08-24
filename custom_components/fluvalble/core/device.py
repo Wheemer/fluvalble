@@ -1,6 +1,6 @@
 """A single Fluval BLE connected LED device."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 import asyncio
 import contextlib
 from datetime import UTC, datetime, timedelta
@@ -23,6 +23,7 @@ from . import (
     LAMP_PROFILE_AQUASKY3,
     LAMP_PROFILE_AUTO,
     LAMP_PROFILE_PLANT,
+    LAMP_PROFILE_PLANT_PRO,
 )
 from .client import Client
 from .discovery import (
@@ -31,7 +32,14 @@ from .discovery import (
     detect_model,
     name_looks_fluval,
 )
-from .effects import EFFECT_NONE, WEATHER_EFFECTS, effect_id, effect_list
+from .effects import (
+    EFFECT_NONE,
+    WEATHER_EFFECTS,
+    effect_id,
+    effect_list,
+    mesh_effect_id,
+    mesh_effect_list,
+)
 from . import encryption, protocol
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,6 +67,13 @@ CHANNEL_NAMES_PLANT = {
     "channel_3": "Cold White",
     "channel_4": "Pure White",
     "channel_5": "Warm White",
+}
+CHANNEL_NAMES_PLANT_PRO = {
+    "channel_1": "Red",
+    "channel_2": "Blue",
+    "channel_3": "Cool White",
+    "channel_4": "Warm White",
+    "channel_5": "Amber",
 }
 # Back-compat alias used by tests / schedule helpers
 CHANNEL_NAMES = CHANNEL_NAMES_AQUASKY
@@ -156,6 +171,7 @@ class Device:
         self.updates_component: list = []
         self._last_diagnostic_update = 0.0
         self.channel_test_active = False
+        self.schedule_mode = "manual"
         self.values = {}
         for channel in NUMBERS:
             self.values[channel] = 0
@@ -453,7 +469,7 @@ class Device:
             return self._channel_count_hint
         if profile == LAMP_PROFILE_AQUASKY:
             return 4
-        if profile in (LAMP_PROFILE_PLANT, LAMP_PROFILE_AQUASKY3):
+        if profile in (LAMP_PROFILE_PLANT, LAMP_PROFILE_PLANT_PRO, LAMP_PROFILE_AQUASKY3):
             return 5
         if self.facebd or self._uses_mesh_protocol():
             return 5
@@ -479,19 +495,23 @@ class Device:
         if self._resolved_channel_count() == 4:
             return CHANNEL_NAMES_AQUASKY
         profile = (self.lamp_profile or LAMP_PROFILE_AUTO).lower()
+        if profile == LAMP_PROFILE_PLANT_PRO:
+            return CHANNEL_NAMES_PLANT_PRO
         if profile == LAMP_PROFILE_PLANT:
             return CHANNEL_NAMES_PLANT
         if profile in (LAMP_PROFILE_AQUASKY, LAMP_PROFILE_AQUASKY3):
             return CHANNEL_NAMES_AQUASKY
         model_l = (self.model or "").lower()
         name_l = (self.name or "").lower()
+        if "plant pro" in model_l or "plantpro" in model_l or "plant pro" in name_l or "plantpro" in name_l:
+            return CHANNEL_NAMES_PLANT_PRO
         if "plant" in model_l or "plant" in name_l or "marine" in model_l or "reef" in model_l:
             return CHANNEL_NAMES_PLANT
         return CHANNEL_NAMES_AQUASKY
 
     def uses_plant_spectrum(self) -> bool:
         """True when channels are Plant Rose/Blue/CW/PW/WW (not AquaSky RGB)."""
-        return self._channel_labels() == CHANNEL_NAMES_PLANT
+        return self._channel_labels() in (CHANNEL_NAMES_PLANT, CHANNEL_NAMES_PLANT_PRO)
 
     def light_mode(self) -> str:
         """Return HA light mode: plant spectrum → rgb (translated), AquaSky → rgbw."""
@@ -715,6 +735,8 @@ class Device:
 
     def effect_list(self) -> list[str]:
         """Return native live weather effects found in FluvalConnect."""
+        if self._uses_mesh_protocol():
+            return mesh_effect_list()
         return effect_list()
 
     def _channel_snapshot(self) -> dict[str, int]:
@@ -750,21 +772,40 @@ class Device:
         packets.append(protocol.old_weather_effect_packet(classic_effect_id))
         return packets
 
+    def _mesh_effect_packets(self, mesh_effect_id: int) -> list[bytes]:
+        """Build the APK-equivalent Plant Pro / mesh weather-effect sequence."""
+        packets: list[bytes] = []
+        if self.values.get("mode") != "manual":
+            packets.append(self._mode_packet(MODE_TO_CODE["manual"]))
+        if not self.values.get("led_on_off"):
+            packets.append(self._switch_packet(True))
+        packets.append(protocol.mesh_weather_effect_packet(mesh_effect_id))
+        return packets
+
     async def async_set_effect(self, effect: str) -> bool:
-        """Start one APK-native classic weather effect."""
-        classic_effect_id = effect_id(effect)
-        if classic_effect_id is None:
-            return False
+        """Start one APK-native weather effect."""
         old_values = dict(self.values)
         self._remember_static_channels_before_effect()
         if not await self._async_prepare_command():
             _LOGGER.warning("Cannot set Fluval effect before BLE device is available")
             return False
-        if self._uses_wifi_protocol() or self._uses_mesh_protocol():
-            _LOGGER.warning("Classic weather effects are not valid for this Fluval transport")
-            return False
 
-        packets = self._classic_effect_packets(classic_effect_id)
+        if self._uses_mesh_protocol():
+            effect_code = mesh_effect_id(effect)
+            if effect_code is None:
+                return False
+            packets = self._mesh_effect_packets(effect_code)
+        else:
+            effect_code = effect_id(effect)
+            if effect_code is None:
+                return False
+            if self._uses_wifi_protocol():
+                _LOGGER.warning("Classic weather effects are not valid for this Fluval transport")
+                return False
+            packets = self._classic_effect_packets(effect_code)
+
+        if not packets:
+            return False
 
         self.values["mode"] = "manual"
         self.values["led_on_off"] = True
@@ -772,7 +813,7 @@ class Device:
         _LOGGER.info(
             "Fluval native effect %s id=%s packets=%s",
             effect,
-            classic_effect_id,
+            effect_code,
             [packet.hex() for packet in packets],
         )
         if not await self._async_send_packets(packets):
@@ -1043,6 +1084,92 @@ class Device:
             self.preview_restore_values = None
             await self.async_set_channels(restore_values)
 
+    async def async_set_native_auto_schedule(
+        self,
+        *,
+        sunrise: tuple[int, int, int],
+        sunset: tuple[int, int, int],
+        sleep: tuple[int, int] | None,
+        day_levels: Iterable[int],
+        night_levels: Iterable[int],
+        activate: bool = True,
+    ) -> bool:
+        """Write a Plant Pro / 4.0 native Auto schedule into the fixture."""
+        old_values = dict(self.values)
+        if not await self._async_prepare_command():
+            _LOGGER.warning("Cannot set native Fluval Auto schedule before BLE device is available")
+            return False
+        if not self._uses_mesh_protocol():
+            self._set_diagnostic_error(
+                "native_schedule_unsupported",
+                "Native Auto schedule writes require a Plant Pro / 4.0 mesh/SPP controller",
+            )
+            return False
+
+        packet = protocol.mesh_auto_schedule_packet(
+            sunrise=sunrise,
+            sunset=sunset,
+            sleep=sleep,
+            day_levels=day_levels,
+            night_levels=night_levels,
+        )
+        packets = [packet]
+        if activate:
+            packets.append(self._mode_packet(MODE_TO_CODE["automatic"]))
+
+        if not await self._async_send_packets(packets):
+            self.values = old_values
+            return False
+
+        if activate:
+            self.values["mode"] = "automatic"
+        self.diagnostics.update(
+            {
+                "status": "native_auto_schedule_submitted",
+                "native_auto_schedule_packet": packet.hex(),
+            }
+        )
+        return True
+
+    async def async_set_native_pro_schedule(
+        self,
+        points: list[dict[str, Any]],
+        *,
+        activate: bool = True,
+    ) -> bool:
+        """Write a Plant Pro / 4.0 native Pro schedule into the fixture."""
+        old_values = dict(self.values)
+        if not await self._async_prepare_command():
+            _LOGGER.warning("Cannot set native Fluval Pro schedule before BLE device is available")
+            return False
+        if not self._uses_mesh_protocol():
+            self._set_diagnostic_error(
+                "native_schedule_unsupported",
+                "Native Pro schedule writes require a Plant Pro / 4.0 mesh/SPP controller",
+            )
+            return False
+
+        normalized = self._normalize_schedule_points(points)
+        packet = protocol.mesh_pro_schedule_packet(normalized)
+        packets = [packet]
+        if activate:
+            packets.append(self._mode_packet(MODE_TO_CODE["professional"]))
+
+        if not await self._async_send_packets(packets):
+            self.values = old_values
+            return False
+
+        if activate:
+            self.values["mode"] = "professional"
+        self.diagnostics.update(
+            {
+                "status": "native_pro_schedule_submitted",
+                "native_pro_schedule_points": len(normalized),
+                "native_pro_schedule_packet": packet.hex(),
+            }
+        )
+        return True
+
     async def async_shutdown(self) -> None:
         """Tear down BLE and background work for config-entry unload/reload."""
         self._shutdown_requested = True
@@ -1271,7 +1398,9 @@ class Device:
             if self._uses_wifi_protocol():
                 packets = [protocol.wifi_timezone_packet(), protocol.wifi_clock_packet()]
             elif self._uses_mesh_protocol():
-                packets = [protocol.mesh_clock_packet()]
+                # Plant Pro / 4.0 SPP does not use the legacy mesh clock opcode.
+                # Refresh state instead of sending an unsupported command.
+                packets = []
             else:
                 packets = [protocol.old_clock_packet()]
 
@@ -1279,6 +1408,9 @@ class Device:
                 if not await self._async_send_packet(packet):
                     self._set_diagnostic_error("clock_sync_failed", "Unable to sync lamp clock")
                     return False
+
+            if self._uses_mesh_protocol() and self.client is not None:
+                await self.client.request_state()
 
             self._clock_synced = True
             self.diagnostics.update(
@@ -1586,7 +1718,7 @@ class Device:
         """Decode the received Fluval packet and sort into values."""
         payload = bytes(data)
         if self._uses_mesh_protocol() or (
-            payload and payload[0] in (protocol.MESH_OPCODE_SET, protocol.MESH_OPCODE_READ)
+            payload and payload[0] in (protocol.MESH_OPCODE_SET, protocol.MESH_OPCODE_STATUS, protocol.MESH_OPCODE_READ)
         ):
             payload = protocol.strip_mesh_opcode(payload)
 

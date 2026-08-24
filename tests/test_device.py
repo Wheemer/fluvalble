@@ -1,19 +1,21 @@
 """Tests for Fluval device schedule and channel behavior."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from custom_components.fluvalble.core import LAMP_PROFILE_PLANT
+from custom_components.fluvalble.core import LAMP_PROFILE_PLANT, LAMP_PROFILE_PLANT_PRO
 from custom_components.fluvalble.core import encryption, protocol
 from custom_components.fluvalble.core.device import (
     AQUASKY_NUMBERS,
     CHANNEL_NAMES_PLANT,
+    CHANNEL_NAMES_PLANT_PRO,
     Device,
     EFFECT_NONE,
     NUMBERS,
     WEATHER_EFFECTS,
 )
-from custom_components.fluvalble.core.effects import effect_id, effect_list
+from custom_components.fluvalble.core.effects import effect_id, effect_list, mesh_effect_id, mesh_effect_list
 
 
 def _make_device(name="AquaSky3.0_Test", model="AquaSky Bluetooth LED", **config):
@@ -25,6 +27,10 @@ def _make_device(name="AquaSky3.0_Test", model="AquaSky Bluetooth LED", **config
             **config,
         },
     )
+
+
+def _mesh_client():
+    return SimpleNamespace(raw_mesh=True, command_write_uuid="0000fff2-0000-1000-8000-00805f9b34fb")
 
 
 def test_initial_values_include_all_channels():
@@ -81,6 +87,20 @@ def test_plant_profile_exposes_five_channels_with_plant_labels():
     assert device.numbers() == NUMBERS
     assert device.entity_name("channel_1") == CHANNEL_NAMES_PLANT["channel_1"]
     assert device.entity_name("channel_5") == CHANNEL_NAMES_PLANT["channel_5"]
+    assert device.light_mode() == "rgb"
+    assert device.uses_plant_spectrum() is True
+
+
+def test_plant_pro_profile_exposes_five_channels_with_pro_labels():
+    device = _make_device(
+        name="PlantPro_AABBCC",
+        model="PlantPro_AABBCC",
+        lamp_profile=LAMP_PROFILE_PLANT_PRO,
+    )
+
+    assert device.numbers() == NUMBERS
+    assert device.entity_name("channel_1") == CHANNEL_NAMES_PLANT_PRO["channel_1"]
+    assert device.entity_name("channel_5") == CHANNEL_NAMES_PLANT_PRO["channel_5"]
     assert device.light_mode() == "rgb"
     assert device.uses_plant_spectrum() is True
 
@@ -182,6 +202,47 @@ def test_classic_weather_effect_catalog_is_stable():
     assert effect_id("Colour cycle") == 4
     assert effect_id("Full moon") == 9
     assert effect_id("Not a Fluval effect") is None
+
+
+def test_plant_pro_mesh_weather_effect_catalog_is_stable():
+    assert mesh_effect_list() == [EFFECT_NONE, "Colour cycle", "Sun and lightning", "Thunderstorm", "Lightning"]
+    assert mesh_effect_id("Colour cycle") == 4
+    assert mesh_effect_id("Sun and lightning") == 3
+    assert mesh_effect_id("Thunderstorm") == 1
+    assert mesh_effect_id("Lightning") == 2
+    assert mesh_effect_id("Full moon") is None
+
+
+def test_mesh_device_exposes_plant_pro_effect_subset():
+    device = _make_device(name="PlantPro_AABBCC", model="PlantPro_AABBCC")
+    device.client = _mesh_client()
+
+    assert device.effect_list() == mesh_effect_list()
+
+
+def test_mesh_native_weather_effect_uses_apk_cbor_packet():
+    asyncio.run(_async_test_mesh_native_weather_effect())
+
+
+async def _async_test_mesh_native_weather_effect():
+    device = _make_device(name="PlantPro_AABBCC", model="PlantPro_AABBCC")
+    device.client = _mesh_client()
+    device.values["mode"] = "automatic"
+    device.values["led_on_off"] = False
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_packets = AsyncMock(return_value=True)
+
+    assert await device.async_set_effect("Colour cycle")
+
+    packets = device._async_send_packets.await_args.args[0]
+    assert packets == [
+        protocol.mesh_mode_packet(0),
+        protocol.mesh_switch_packet(True),
+        protocol.mesh_weather_effect_packet(4),
+    ]
+    assert device.values["effect"] == "Colour cycle"
+    assert device.values["led_on_off"] is True
+    assert device.values["mode"] == "manual"
 
 
 def test_product_0103_channel_hint_overrides_plant_profile():
@@ -479,3 +540,81 @@ def test_reachability_refresh_notifies_connect_handlers_when_last_seen_expires()
 
     handler.assert_called_once()
     assert device.attribute("connection")["is_on"] is False
+
+
+def test_mesh_native_auto_schedule_sends_fixture_schedule_and_auto_mode():
+    asyncio.run(_async_test_mesh_native_auto_schedule())
+
+
+async def _async_test_mesh_native_auto_schedule():
+    device = _make_device(name="PlantPro_AABBCC", model="PlantPro_AABBCC")
+    device.client = _mesh_client()
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_packets = AsyncMock(return_value=True)
+
+    assert await device.async_set_native_auto_schedule(
+        sunrise=(8, 0, 60),
+        sunset=(21, 0, 45),
+        sleep=(22, 30),
+        day_levels=[80, 70, 60, 50, 40],
+        night_levels=[0, 10, 0, 0, 0],
+    )
+
+    packets = device._async_send_packets.await_args.args[0]
+    assert packets == [
+        protocol.mesh_auto_schedule_packet(
+            sunrise=(8, 0, 60),
+            sunset=(21, 0, 45),
+            sleep=(22, 30),
+            day_levels=[80, 70, 60, 50, 40],
+            night_levels=[0, 10, 0, 0, 0],
+        ),
+        protocol.mesh_mode_packet(1),
+    ]
+    assert device.values["mode"] == "automatic"
+
+
+def test_mesh_native_pro_schedule_sends_fixture_schedule_and_professional_mode():
+    asyncio.run(_async_test_mesh_native_pro_schedule())
+
+
+async def _async_test_mesh_native_pro_schedule():
+    device = _make_device(name="PlantPro_AABBCC", model="PlantPro_AABBCC")
+    device.client = _mesh_client()
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_packets = AsyncMock(return_value=True)
+
+    assert await device.async_set_native_pro_schedule(
+        [
+            {"time": "08:00", "channel_1": 1, "channel_2": 2, "channel_3": 3, "channel_4": 4, "channel_5": 5},
+            {"time": "12:30", "channel_1": 10, "channel_2": 20, "channel_3": 30, "channel_4": 40, "channel_5": 50},
+        ]
+    )
+
+    packets = device._async_send_packets.await_args.args[0]
+    assert packets == [
+        protocol.mesh_pro_schedule_packet(
+            [
+                {
+                    "time": "08:00",
+                    "minute": 480,
+                    "channel_1": 1,
+                    "channel_2": 2,
+                    "channel_3": 3,
+                    "channel_4": 4,
+                    "channel_5": 5,
+                },
+                {
+                    "time": "12:30",
+                    "minute": 750,
+                    "channel_1": 10,
+                    "channel_2": 20,
+                    "channel_3": 30,
+                    "channel_4": 40,
+                    "channel_5": 50,
+                },
+            ]
+        ),
+        protocol.mesh_mode_packet(2),
+    ]
+    assert device.values["mode"] == "professional"

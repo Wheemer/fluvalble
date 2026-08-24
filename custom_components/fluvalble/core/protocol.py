@@ -23,7 +23,15 @@ MESH_MANUAL_KEY = 14
 MESH_CHANNEL_KEYS = (3, 4, 5, 6, 7)
 MESH_OPCODE_READ = 0xD0
 MESH_OPCODE_SET = 0xD1
+MESH_OPCODE_STATUS = 0xD2
 MESH_OPCODE_CLOCK = 0xCD
+MESH_WEATHER_KEY = 14
+MESH_AUTO_SUNRISE_KEY = 8
+MESH_AUTO_SUNSET_KEY = 9
+MESH_AUTO_SLEEP_KEY = 10
+MESH_AUTO_DAY_LEVELS_KEY = 11
+MESH_AUTO_NIGHT_LEVELS_KEY = 12
+MESH_PRO_SCHEDULE_KEY = 13
 
 OLD_READ_PARAMS = bytes((0x68, 0x05))
 OLD_MODE = 0x02
@@ -77,9 +85,62 @@ def mesh_mode_packet(mode: int) -> bytes:
 
 def mesh_all_zone_packet(values: Iterable[int]) -> bytes:
     """Build mesh multi-channel packet (0xD1 + CBOR)."""
-    packet: dict[int, bool | int] = {MESH_MANUAL_KEY: 0}
-    packet.update({key: _clamp_percent(value) for key, value in zip(MESH_CHANNEL_KEYS, values, strict=False)})
+    packet: dict[int, bool | int] = {
+        key: _clamp_percent(value) for key, value in zip(MESH_CHANNEL_KEYS, values, strict=False)
+    }
+    packet[MESH_MANUAL_KEY] = 0
     return mesh_set_packet(packet)
+
+
+def mesh_weather_effect_packet(effect_id: int) -> bytes:
+    """Build Plant Pro / mesh weather-effect packet (0xD1 + {14: id})."""
+    if effect_id not in (1, 2, 3, 4):
+        raise ValueError("Plant Pro mesh weather effect ID must be 1, 2, 3, or 4")
+    return mesh_set_packet({MESH_WEATHER_KEY: effect_id})
+
+
+def mesh_auto_schedule_packet(
+    *,
+    sunrise: tuple[int, int, int],
+    sunset: tuple[int, int, int],
+    sleep: tuple[int, int] | None,
+    day_levels: Iterable[int],
+    night_levels: Iterable[int],
+) -> bytes:
+    """Build Plant Pro native Auto schedule packet.
+
+    Keys/shape match FluvalConnect createLightAutoExportValue for the mesh
+    branch: 8 sunrise h/m/ramp, 9 sunset-end h/m/ramp, 10 sleep h/m or FF/FF,
+    11 day levels, 12 night levels.
+    """
+    sleep_bytes = bytes((0xFF, 0xFF)) if sleep is None else _time_bytes(sleep[0], sleep[1])
+    return mesh_set_packet(
+        {
+            MESH_AUTO_SUNRISE_KEY: _time_ramp_bytes(*sunrise),
+            MESH_AUTO_SUNSET_KEY: _time_ramp_bytes(*sunset),
+            MESH_AUTO_SLEEP_KEY: sleep_bytes,
+            MESH_AUTO_DAY_LEVELS_KEY: _level_bytes(day_levels),
+            MESH_AUTO_NIGHT_LEVELS_KEY: _level_bytes(night_levels),
+        }
+    )
+
+
+def mesh_pro_schedule_packet(points: Iterable[dict[str, Any]]) -> bytes:
+    """Build Plant Pro native Pro schedule packet from normalized points."""
+    blob = bytearray()
+    encoded_points: list[tuple[int, int, list[int]]] = []
+    for point in points:
+        minute = int(point.get("minute", 0)) % (24 * 60)
+        levels = [_clamp_percent(int(point.get(f"channel_{index}", 0))) for index in range(1, 6)]
+        encoded_points.append((minute // 60, minute % 60, levels))
+
+    if len(encoded_points) > 36:
+        raise ValueError("Plant Pro Pro schedule supports at most 36 points")
+
+    blob.append(len(encoded_points))
+    for hour, minute, levels in encoded_points:
+        blob.extend((hour, minute, *levels))
+    return mesh_set_packet({MESH_PRO_SCHEDULE_KEY: bytes(blob)})
 
 
 def mesh_read_params_packet() -> bytes:
@@ -92,7 +153,7 @@ def mesh_clock_packet(now: datetime | None = None) -> bytes:
     return bytes((MESH_OPCODE_CLOCK,)) + _clock_payload(now)
 
 
-def mesh_set_packet(values: dict[int, bool | int]) -> bytes:
+def mesh_set_packet(values: dict[int, bool | bytes | int]) -> bytes:
     """Wrap a CBOR map with the mesh set opcode."""
     return bytes((MESH_OPCODE_SET,)) + cbor_map(values)
 
@@ -377,12 +438,12 @@ def old_receive_frame_ready(payload: bytes, *, channel_count: int | None = None)
 
 def strip_mesh_opcode(data: bytes) -> bytes:
     """Remove a leading mesh opcode byte when present."""
-    if data and data[0] in (MESH_OPCODE_SET, MESH_OPCODE_READ, 0xFF):
+    if data and data[0] in (MESH_OPCODE_SET, MESH_OPCODE_STATUS, MESH_OPCODE_READ, 0xFF):
         return data[1:]
     return data
 
 
-def cbor_map(values: dict[int, bool | int]) -> bytes:
+def cbor_map(values: dict[int, bool | bytes | int]) -> bytes:
     """Encode the tiny CBOR subset used by Fluval WiFi/mesh BLE light commands."""
     if len(values) > 23:
         raise ValueError("CBOR helper only supports small maps")
@@ -392,6 +453,8 @@ def cbor_map(values: dict[int, bool | int]) -> bytes:
         packet.extend(_cbor_uint(key))
         if isinstance(value, bool):
             packet.append(0xF5 if value else 0xF4)
+        elif isinstance(value, bytes):
+            packet.extend(_cbor_bytes(value))
         else:
             packet.extend(_cbor_int(value))
     return bytes(packet)
@@ -406,6 +469,11 @@ def decode_cbor_map(data: bytes) -> dict[Any, Any] | None:
     if not isinstance(value, dict):
         return None
     return value
+
+
+def decode_cbor_update(data: bytes) -> dict[Any, Any] | None:
+    """Decode a FACEBD/mesh state packet, accepting optional mesh opcode prefix."""
+    return decode_cbor_map(strip_mesh_opcode(data))
 
 
 def _clock_payload(now: datetime | None = None) -> bytes:
@@ -428,6 +496,24 @@ def _clock_payload(now: datetime | None = None) -> bytes:
 
 def _clamp_percent(value: int) -> int:
     return max(0, min(100, int(value)))
+
+
+def _time_bytes(hour: int, minute: int) -> bytes:
+    return bytes((max(0, min(23, int(hour))), max(0, min(59, int(minute)))))
+
+
+def _time_ramp_bytes(hour: int, minute: int, ramp_minutes: int) -> bytes:
+    return _time_bytes(hour, minute) + bytes((max(0, min(255, int(ramp_minutes))),))
+
+
+def _level_bytes(values: Iterable[int]) -> bytes:
+    levels = [_clamp_percent(value) for value in values]
+    levels = [*levels[:5], *([0] * max(0, 5 - len(levels)))]
+    return bytes(levels[:5])
+
+
+def _cbor_bytes(value: bytes) -> bytes:
+    return _cbor_major(2, len(value)) + value
 
 
 def _cbor_int(value: int) -> bytes:
