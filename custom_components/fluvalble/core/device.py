@@ -6,7 +6,7 @@ import contextlib
 from datetime import UTC, datetime, timedelta
 import logging
 from time import monotonic
-from typing import Any, TypedDict
+from typing import Any
 
 from bleak import AdvertisementData, BLEDevice, BleakError, BleakScanner
 from homeassistant.components import bluetooth
@@ -97,21 +97,7 @@ PLANT_CHANNEL_RGB = {
 }
 
 
-class Attribute(TypedDict, total=False):
-    """Attributes used by light, select, and diagnostic entities."""
-
-    options: list[str]
-    default: str
-
-    min: int
-    max: int
-    step: int
-    value: int
-
-    is_on: bool
-    extra: dict
-    device_class: str
-    native_unit_of_measurement: str | None
+Attribute = dict[str, Any]
 
 
 class Device:
@@ -172,12 +158,14 @@ class Device:
         self._last_diagnostic_update = 0.0
         self.channel_test_active = False
         self.schedule_mode = "manual"
-        self.values = {}
+        self.values: dict[str, Any] = {}
         for channel in NUMBERS:
             self.values[channel] = 0
         self.values["mode"] = "manual"
         self.values["led_on_off"] = False
         self.values["effect"] = None
+        self.values["native_auto_schedule"] = None
+        self.values["native_pro_schedule"] = None
         self.diagnostics: dict[str, Any] = {
             "status": "not_run",
             "configured_mac": self.address,
@@ -225,6 +213,7 @@ class Device:
         self.conn_info["last_seen"] = datetime.now(UTC)
         if rssi is not None:
             self.conn_info["rssi"] = rssi
+            self.conn_info["rssi_updated_at"] = self.conn_info["last_seen"]
         if notify:
             for handler in self.updates_connect:
                 handler()
@@ -389,11 +378,13 @@ class Device:
             self._schedule_reachability_refresh()
 
     def is_reachable(self) -> bool:
-        """True when a recent BLE advertisement updated last_seen.
+        """True when a recent BLE advertisement or GATT operation was seen.
 
-        GATT connection state is exposed separately as gatt_connected on the
-        Reachable entity attributes; it does not keep Reachable on by itself.
+        An open GATT connection is direct proof of reachability. RSSI remains
+        advertisement-derived and can therefore be older than this state.
         """
+        if self.connected:
+            return True
         last = self.conn_info.get("last_seen")
         if last is None:
             return False
@@ -833,17 +824,13 @@ class Device:
         return dict(self._off_restore_channels)
 
     async def async_fade_off(self) -> bool:
-        """Fade all channels proportionally to zero, then send power OFF.
+        """Send the profile's power-off command without colour writes.
 
-        Classic Fluval firmware fades its LED drivers unevenly after a direct
-        6803 OFF, which can make a yellow or white mix flash red. Sending a
-        short sequence of APK 6804 channel packets down to absolute zero first
-        prevents that hardware fade while retaining the prior mix for turn-on.
+        FluvalConnect's power action does not walk the channel mix toward zero.
+        Sending intermediate 6804 frames made mixed colours visibly drift as
+        different LED channels dimmed at different rates. Preserve the static
+        mix in software and let the next power-on restore it.
         """
-        # The APK does not send channel frames when its power button is used
-        # during a native weather effect; it sends only 6803 OFF.  A 6804 fade
-        # here uses stale pre-effect channel values and can fail to stop the
-        # controller's autonomous effect engine.
         if self.values.get("effect"):
             restore = self._channels_after_effect()
             if any(restore.values()):
@@ -860,37 +847,15 @@ class Device:
         if not any(start_values.values()) and not self.values.get("effect"):
             return await self.async_set_switch("led_on_off", False)
 
-        old_values = dict(self.values)
-        if not await self._async_prepare_command():
-            _LOGGER.warning("Cannot fade Fluval light before BLE device is available")
-            return False
-
-        packets: list[bytes] = []
-        previous: list[int] | None = None
-        for numerator in (2, 1, 0):
-            scaled = [round(start_values[channel] * numerator / 3) for channel in channels]
-            if scaled != previous:
-                packets.append(self._channels_packet(scaled))
-                previous = scaled
-        packets.append(self._switch_packet(False))
-
-        _LOGGER.info(
-            "Fluval proportional OFF fade %s channels=%s packets=%s",
-            self.address,
-            list(start_values.values()),
-            [packet.hex() for packet in packets],
-        )
-        if not await self._async_send_packets(packets):
-            self.values = old_values
-            return False
-
+        previous_restore = self._off_restore_channels
         self._off_restore_channels = self._effect_restore_channels or start_values
+        if not await self.async_set_switch("led_on_off", False):
+            self._off_restore_channels = previous_restore
+            return False
+
         self._effect_restore_channels = None
         for channel in channels:
             self.values[channel] = 0
-        self.values["led_on_off"] = False
-        self.values["effect"] = None
-        self.clear_commanded_light()
         return True
 
     def entity_name(self, attr: str) -> str:
@@ -924,6 +889,7 @@ class Device:
             return Attribute(
                 value=self.conn_info.get("rssi"),
                 native_unit_of_measurement="dBm",
+                extra={"last_advertisement": self.conn_info.get("rssi_updated_at")},
             )
         if attr == "last_seen":
             return Attribute(value=self.conn_info.get("last_seen"))
@@ -1469,11 +1435,15 @@ class Device:
         if not await self._async_ensure_client():
             self._set_diagnostic_error("device_not_found", "BLE device is not available")
             return False
-        ok = await self.client.ensure_connected()
+        client = self.client
+        if client is None:
+            self._set_diagnostic_error("device_not_found", "BLE client was not created")
+            return False
+        ok = await client.ensure_connected()
         if not ok:
             self._set_diagnostic_error(
                 "connect_failed",
-                self.client.last_error or "Unable to connect to BLE device",
+                client.last_error or "Unable to connect to BLE device",
             )
         return ok
 
@@ -1488,19 +1458,23 @@ class Device:
         if not await self._async_ensure_client():
             _LOGGER.warning("Cannot send Fluval state before BLE device is available")
             return False
+        client = self.client
+        if client is None:
+            _LOGGER.warning("Cannot send Fluval state without a BLE client")
+            return False
 
         _LOGGER.debug(
             "Sending Fluval %s packet(s) via %s (facebd=%s mesh=%s): %s",
             len(packets),
-            self.client.command_write_uuid,
-            self.client.raw_facebd,
-            self.client.raw_mesh,
+            client.command_write_uuid,
+            client.raw_facebd,
+            client.raw_mesh,
             [packet.hex() for packet in packets],
         )
-        if not await self.client.send_sequence(packets):
+        if not await client.send_sequence(packets):
             self._set_diagnostic_error(
                 "write_failed",
-                self.client.last_error or "BLE write failed",
+                client.last_error or "BLE write failed",
             )
             return False
 
@@ -1513,7 +1487,7 @@ class Device:
                 "last_write_at": datetime.now(UTC).isoformat(),
                 "last_write_packet": packets[-1].hex(),
                 "last_write_packets": [packet.hex() for packet in packets],
-                "last_write_targets": list(self.client.last_write_targets),
+                "last_write_targets": list(client.last_write_targets),
                 "last_error": None,
             }
         )
@@ -1527,9 +1501,12 @@ class Device:
         """Resolve the controller and request its current state."""
         if not await self._async_ensure_client():
             return False
+        client = self.client
+        if client is None:
+            return False
 
         try:
-            await self.client.request_state()
+            await client.request_state()
         except (TimeoutError, BleakError) as err:
             _LOGGER.debug("Unable to refresh Fluval state", exc_info=err)
             return False
@@ -1804,6 +1781,16 @@ class Device:
                 present += 1
         if present:
             self._channel_count_hint = 5 if present >= 5 else 4
+
+        if any(key in data for key in range(protocol.MESH_AUTO_SUNRISE_KEY, protocol.MESH_PRO_SCHEDULE_KEY + 1)):
+            auto_schedule = protocol.decode_mesh_auto_schedule(data)
+            pro_schedule = protocol.decode_mesh_pro_schedule(data.get(protocol.MESH_PRO_SCHEDULE_KEY))
+            if auto_schedule is not None:
+                self.values["native_auto_schedule"] = auto_schedule
+                self.diagnostics["native_auto_schedule"] = auto_schedule
+            if pro_schedule is not None:
+                self.values["native_pro_schedule"] = pro_schedule
+                self.diagnostics["native_pro_schedule"] = pro_schedule
 
         for handler in self.updates_component:
             handler()

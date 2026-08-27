@@ -148,7 +148,9 @@ def _stub_homeassistant():
     # ---- homeassistant.helpers.device_registry ----
     ha_dr = types.ModuleType("homeassistant.helpers.device_registry")
     ha_dr.CONNECTION_BLUETOOTH = "bluetooth"
+    ha_dr.DeviceEntry = MagicMock
     ha_dr.format_mac = lambda mac: str(mac).strip().upper().replace("-", ":")
+    ha_er = types.ModuleType("homeassistant.helpers.entity_registry")
 
     # ---- homeassistant.helpers.entity ----
     class _FakeEntity:
@@ -177,6 +179,7 @@ def _stub_homeassistant():
     ha_helpers = types.ModuleType("homeassistant.helpers")
     ha_helpers.entity = ha_entity
     ha_helpers.device_registry = ha_dr
+    ha_helpers.entity_registry = ha_er
 
     # ---- homeassistant.helpers.entity_platform ----
     ha_ep = types.ModuleType("homeassistant.helpers.entity_platform")
@@ -210,11 +213,15 @@ def _stub_homeassistant():
         SIGNAL_STRENGTH = "signal_strength"
         TIMESTAMP = "timestamp"
 
+    class SensorStateClass(str, enum.Enum):
+        MEASUREMENT = "measurement"
+
     class _FakeSensorEntity(_FakeEntity):
         pass
 
     ha_sensor = types.ModuleType("homeassistant.components.sensor")
     ha_sensor.SensorDeviceClass = SensorDeviceClass
+    ha_sensor.SensorStateClass = SensorStateClass
     ha_sensor.SensorEntity = _FakeSensorEntity
 
     # ---- homeassistant.components.select ----
@@ -320,6 +327,7 @@ def _stub_homeassistant():
         "homeassistant.components.light": ha_light,
         "homeassistant.helpers": ha_helpers,
         "homeassistant.helpers.device_registry": ha_dr,
+        "homeassistant.helpers.entity_registry": ha_er,
         "homeassistant.helpers.entity": ha_entity,
         "homeassistant.helpers.entity_platform": ha_ep,
         "homeassistant.helpers.event": ha_event,

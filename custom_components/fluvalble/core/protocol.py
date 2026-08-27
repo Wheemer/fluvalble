@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -32,6 +32,7 @@ MESH_AUTO_SLEEP_KEY = 10
 MESH_AUTO_DAY_LEVELS_KEY = 11
 MESH_AUTO_NIGHT_LEVELS_KEY = 12
 MESH_PRO_SCHEDULE_KEY = 13
+MESH_PRO_SCHEDULE_MAX_POINTS = 12
 
 OLD_READ_PARAMS = bytes((0x68, 0x05))
 OLD_MODE = 0x02
@@ -134,8 +135,8 @@ def mesh_pro_schedule_packet(points: Iterable[dict[str, Any]]) -> bytes:
         levels = [_clamp_percent(int(point.get(f"channel_{index}", 0))) for index in range(1, 6)]
         encoded_points.append((minute // 60, minute % 60, levels))
 
-    if len(encoded_points) > 36:
-        raise ValueError("Plant Pro Pro schedule supports at most 36 points")
+    if len(encoded_points) > MESH_PRO_SCHEDULE_MAX_POINTS:
+        raise ValueError(f"Plant Pro Pro schedule supports at most {MESH_PRO_SCHEDULE_MAX_POINTS} points")
 
     blob.append(len(encoded_points))
     for hour, minute, levels in encoded_points:
@@ -148,12 +149,49 @@ def mesh_read_params_packet() -> bytes:
     return bytes((MESH_OPCODE_READ, 0xFF))
 
 
+def decode_mesh_auto_schedule(data: dict[int, Any]) -> dict[str, Any] | None:
+    """Decode the hardware-verified Plant Pro Auto schedule fields."""
+    sunrise = _decode_time_ramp(data.get(MESH_AUTO_SUNRISE_KEY))
+    sunset = _decode_time_ramp(data.get(MESH_AUTO_SUNSET_KEY))
+    sleep = _decode_sleep_time(data.get(MESH_AUTO_SLEEP_KEY))
+    day_levels = _decode_levels(data.get(MESH_AUTO_DAY_LEVELS_KEY))
+    night_levels = _decode_levels(data.get(MESH_AUTO_NIGHT_LEVELS_KEY))
+    if all(value is None for value in (sunrise, sunset, sleep, day_levels, night_levels)):
+        return None
+    return {
+        "sunrise": sunrise,
+        "sunset": sunset,
+        "sleep": sleep,
+        "day_levels": day_levels,
+        "night_levels": night_levels,
+    }
+
+
+def decode_mesh_pro_schedule(value: Any) -> list[dict[str, Any]] | None:
+    """Decode a Plant Pro key-13 point blob into normalized schedule points."""
+    if not isinstance(value, bytes) or not value:
+        return None
+    count = value[0]
+    if count > MESH_PRO_SCHEDULE_MAX_POINTS or len(value) != 1 + count * 7:
+        return None
+    points: list[dict[str, Any]] = []
+    for index in range(count):
+        offset = 1 + index * 7
+        hour, minute, *levels = value[offset : offset + 7]
+        if hour > 23 or minute > 59 or any(level > 100 for level in levels):
+            return None
+        point: dict[str, Any] = {"minute": hour * 60 + minute}
+        point.update({f"channel_{channel}": level for channel, level in enumerate(levels, start=1)})
+        points.append(point)
+    return points
+
+
 def mesh_clock_packet(now: datetime | None = None) -> bytes:
     """Build mesh clock sync (opcode 0xCD + Y M D W h m s)."""
     return bytes((MESH_OPCODE_CLOCK,)) + _clock_payload(now)
 
 
-def mesh_set_packet(values: dict[int, bool | bytes | int]) -> bytes:
+def mesh_set_packet(values: Mapping[int, bool | bytes | int]) -> bytes:
     """Wrap a CBOR map with the mesh set opcode."""
     return bytes((MESH_OPCODE_SET,)) + cbor_map(values)
 
@@ -205,7 +243,7 @@ def old_clock_packet(now: datetime | None = None) -> bytes:
     return old_packet(bytes((0x68, OLD_CLOCK)) + _clock_payload(now))
 
 
-def old_packet(packet: bytes) -> bytes:
+def old_packet(packet: bytes | bytearray) -> bytes:
     """Append the XOR checksum used by the old light protocol."""
     checksum = 0
     for item in packet:
@@ -302,6 +340,12 @@ _OLD_LIGHT_TYPE_3_IDS = frozenset(
         370,
         371,
         372,
+        # Historical Fluval controller firmware identifies the Blue family
+        # (0x0161-0x0164) as four-channel rather than the five-channel default.
+        353,
+        354,
+        355,
+        356,
         564,
         29057,  # LIGHT_ID_385_OLD
     }
@@ -443,7 +487,7 @@ def strip_mesh_opcode(data: bytes) -> bytes:
     return data
 
 
-def cbor_map(values: dict[int, bool | bytes | int]) -> bytes:
+def cbor_map(values: Mapping[int, bool | bytes | int]) -> bytes:
     """Encode the tiny CBOR subset used by Fluval WiFi/mesh BLE light commands."""
     if len(values) > 23:
         raise ValueError("CBOR helper only supports small maps")
@@ -503,13 +547,42 @@ def _time_bytes(hour: int, minute: int) -> bytes:
 
 
 def _time_ramp_bytes(hour: int, minute: int, ramp_minutes: int) -> bytes:
-    return _time_bytes(hour, minute) + bytes((max(0, min(255, int(ramp_minutes))),))
+    return _time_bytes(hour, minute) + bytes((max(0, min(240, int(ramp_minutes))),))
 
 
 def _level_bytes(values: Iterable[int]) -> bytes:
     levels = [_clamp_percent(value) for value in values]
     levels = [*levels[:5], *([0] * max(0, 5 - len(levels)))]
     return bytes(levels[:5])
+
+
+def _decode_time_ramp(value: Any) -> dict[str, int] | None:
+    if not isinstance(value, bytes) or len(value) < 3:
+        return None
+    hour, minute, ramp = value[:3]
+    if hour > 23 or minute > 59:
+        return None
+    return {"hour": hour, "minute": minute, "ramp": ramp}
+
+
+def _decode_sleep_time(value: Any) -> dict[str, int] | None:
+    if not isinstance(value, bytes) or len(value) < 2:
+        return None
+    hour, minute = value[:2]
+    if (hour, minute) == (0xFF, 0xFF):
+        return None
+    if hour > 23 or minute > 59:
+        return None
+    return {"hour": hour, "minute": minute}
+
+
+def _decode_levels(value: Any) -> list[int] | None:
+    if not isinstance(value, bytes) or len(value) < 5:
+        return None
+    levels = list(value[:5])
+    if any(level > 100 for level in levels):
+        return None
+    return levels
 
 
 def _cbor_bytes(value: bytes) -> bytes:

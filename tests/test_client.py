@@ -4,6 +4,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from custom_components.fluvalble.core.client import Client
 from custom_components.fluvalble.core import encryption, protocol
 
@@ -58,6 +60,48 @@ def test_client_honors_configured_wire_dialect():
     client = Client(ble_device, wire_dialect=encryption.DIALECT_XOR_0E)
 
     assert client.wire_dialect == encryption.DIALECT_XOR_0E
+
+
+def test_fresh_connection_uses_one_bounded_connector_retry_cycle():
+    asyncio.run(_async_test_fresh_connection_retry_cycle())
+
+
+async def _async_test_fresh_connection_retry_cycle():
+    client = _make_client()
+    connected = SimpleNamespace(is_connected=True, start_notify=AsyncMock())
+    client._resolve_characteristics = AsyncMock()
+    client._async_request_classic_mtu = AsyncMock()
+    client._async_classic_session_init = AsyncMock()
+
+    with patch(
+        "custom_components.fluvalble.core.client.establish_connection",
+        new=AsyncMock(return_value=connected),
+    ) as establish:
+        result = await client._ensure_client()
+
+    assert result is connected
+    assert establish.await_count == 1
+    assert establish.await_args.kwargs["max_attempts"] == 3
+    assert establish.await_args.kwargs["disconnected_callback"] == client._on_disconnected
+
+
+def test_unexpected_persistent_disconnect_schedules_immediate_reconnect():
+    status_callback = MagicMock()
+    ble_device = MagicMock(address="AA:BB:CC:DD:EE:FF")
+    client = Client(ble_device, status_callback=status_callback, active_time=0)
+    connected = MagicMock()
+    client.client = connected
+    client._classic_session_ready = True
+
+    with patch(
+        "custom_components.fluvalble.core.client.asyncio.create_task",
+        side_effect=lambda coro: _FakeTask(coro),
+    ) as create_task:
+        client._on_disconnected(connected)
+
+    status_callback.assert_called_once_with(False)
+    create_task.assert_called_once()
+    assert client.classic_session_ready is False
 
 
 def test_classic_service_pins_apk_1001_and_1002_characteristics():
@@ -351,7 +395,10 @@ def test_extend_session_noop_for_persistent_mode():
 def test_persistent_connection_uses_infinite_ping_deadline():
     client = _make_client()
     client._active_time = 0
-    with patch("custom_components.fluvalble.core.client.asyncio.create_task", return_value=MagicMock()):
+    with patch(
+        "custom_components.fluvalble.core.client.asyncio.create_task",
+        side_effect=lambda coro: _FakeTask(coro),
+    ):
         client.ping()
     assert client.ping_time == float("inf")
     assert client.ping_task is not None
@@ -379,3 +426,9 @@ def test_product_id_remap_0181_to_385_old():
     product = protocol.product_id_from_manufacturer_data({12592: payload.hex()})
     assert product == 29057
     assert protocol.channel_count_for_product_id(product) == 4
+
+
+@pytest.mark.parametrize("product_id", range(0x0161, 0x0165))
+def test_blue_family_product_ids_are_four_channel(product_id):
+    assert protocol.light_type_from_product_id(product_id) == 3
+    assert protocol.channel_count_for_product_id(product_id) == 4

@@ -5,17 +5,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [0.0.33] - 2026-08-27
 
 ### Added
 - Plant Pro / Plant 4.0 BLE support using the FluvalConnect `fff0`/`fff1`/`fff2`
   mesh/SPP protocol (`0xD1` + CBOR).
-- Native Plant Pro / 4.0 weather effects through the Home Assistant light
-  effect control.
+- Plant Pro / 4.0 native Sun, Crescent Moon, Full Moon, and Half Moon scenes
+  through the Home Assistant light effect control, using the four mesh indices
+  present in FluvalConnect.
 - Native Plant Pro / 4.0 Auto schedule writes using the fixture's sunrise,
   sunset, sleep, day-level, and night-level packet fields.
 - Native Plant Pro / 4.0 Professional schedule writes using fixture-side
   point-schedule storage.
+- Native Plant Pro / 4.0 Auto and Professional schedule readback from status
+  keys 8-13 for diagnostics and future UI use.
 - Plant Pro / 4.0 lamp profile with Red / Blue / Cool White / Warm White /
   Amber channel labels.
 - Bluetooth discovery matchers for Plant Pro, Plant 4.0, Reef 4.0, and Reef
@@ -25,15 +28,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   compatibility.
 
 ### Changed
-- Default BLE active connection window increased from 120 s to **300 s**; advertisements extend an open session so commands need fewer cold reconnects.
-- **Reachable** binary sensor now re-evaluates when `last_seen` ages out instead of staying stuck on.
+- Fresh BLE connections now use one bounded `bleak-retry-connector` retry cycle
+  instead of nesting three outer attempts around four internal attempts.
+- Unexpected drops in always-connected mode trigger an immediate serialized
+  reconnect instead of waiting for the next keep-alive interval.
+- **Reachable** is true for a live GATT session or recent BLE activity and
+  re-evaluates when `last_seen` ages out.
 - **`active_time: 0`** keeps the GATT session connected permanently (connects on integration load).
-- **Reachable** reflects recent BLE advertisements only; `gatt_connected` is still exposed in attributes.
-- Default **`active_time` is 0** (always connected) for local use.
+- RSSI remains raw advertisement data, now includes its advertisement timestamp,
+  and uses the Home Assistant measurement state class.
+- Plant Pro Professional schedules are capped at the official, hardware-tested
+  limit of 12 points; sunrise/sunset ramps are capped at 240 minutes.
+- Native Professional service validation now preserves explicit Plant Pro
+  `channel_1`-`channel_5` values instead of forcing them through RGBW aliases.
 - Mesh / Plant Pro devices that expose both old `1000` and mesh `fff0` services
   now prefer the mesh `fff2` write and `fff1` notify characteristics.
 - Home Assistant runtime data handling now preserves HA-managed schedule mode and
   locking across the newer config-entry runtime-data lifecycle.
+
+### Fixed
+- Removed the nonstandard `importlib.reload()` package self-reloader. Config
+  entries now use Home Assistant's normal unload/setup lifecycle without mixing
+  old and new Python class generations.
+- Power-off no longer emits intermediate colour frames, preventing yellow/white
+  mixes from visibly drifting red during shutdown while retaining the prior mix
+  for the next power-on.
+- Corrected the four Plant Pro mesh effect assignments, which had reused classic
+  thunder/color-cycle names for the APK's sun and moon indices.
+- Corrected classic Blue-family product IDs `0x0161`-`0x0164` to four channels.
+- Existing duplicate Fluval device-registry rows are safely merged into the
+  canonical Bluetooth-MAC device when no other integration references them.
+- Downloadable diagnostics redact Bluetooth addresses, local names, raw service
+  data, manufacturer data, and registry identifiers.
+- Fixed an unawaited keep-alive coroutine warning in the test suite.
 
 ### Credits
 - Plant Pro / 4.0 packet behavior was informed by FluvalConnect APK

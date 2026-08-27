@@ -205,12 +205,12 @@ def test_classic_weather_effect_catalog_is_stable():
 
 
 def test_plant_pro_mesh_weather_effect_catalog_is_stable():
-    assert mesh_effect_list() == [EFFECT_NONE, "Colour cycle", "Sun and lightning", "Thunderstorm", "Lightning"]
-    assert mesh_effect_id("Colour cycle") == 4
-    assert mesh_effect_id("Sun and lightning") == 3
-    assert mesh_effect_id("Thunderstorm") == 1
-    assert mesh_effect_id("Lightning") == 2
-    assert mesh_effect_id("Full moon") is None
+    assert mesh_effect_list() == [EFFECT_NONE, "Sun", "Crescent moon", "Full moon", "Half moon"]
+    assert mesh_effect_id("Sun") == 4
+    assert mesh_effect_id("Crescent moon") == 3
+    assert mesh_effect_id("Full moon") == 1
+    assert mesh_effect_id("Half moon") == 2
+    assert mesh_effect_id("Lightning") is None
 
 
 def test_mesh_device_exposes_plant_pro_effect_subset():
@@ -232,7 +232,7 @@ async def _async_test_mesh_native_weather_effect():
     device._async_prepare_command = AsyncMock(return_value=True)
     device._async_send_packets = AsyncMock(return_value=True)
 
-    assert await device.async_set_effect("Colour cycle")
+    assert await device.async_set_effect("Sun")
 
     packets = device._async_send_packets.await_args.args[0]
     assert packets == [
@@ -240,7 +240,7 @@ async def _async_test_mesh_native_weather_effect():
         protocol.mesh_switch_packet(True),
         protocol.mesh_weather_effect_packet(4),
     ]
-    assert device.values["effect"] == "Colour cycle"
+    assert device.values["effect"] == "Sun"
     assert device.values["led_on_off"] is True
     assert device.values["mode"] == "manual"
 
@@ -303,11 +303,11 @@ async def _async_test_effect_active_off_sends_only_apk_switch_packet():
     assert device.channels_before_off() == restore
 
 
-def test_classic_off_fades_channels_proportionally_to_zero_before_power_off():
-    asyncio.run(_async_test_classic_off_fade())
+def test_classic_off_sends_only_power_command_without_colour_shift():
+    asyncio.run(_async_test_classic_off_without_colour_writes())
 
 
-async def _async_test_classic_off_fade():
+async def _async_test_classic_off_without_colour_writes():
     device = _make_device(name="AquaSky2.0_Test", model="AquaSky 2.0 Bluetooth LED")
     original = {
         "channel_1": 100,
@@ -323,12 +323,7 @@ async def _async_test_classic_off_fade():
     assert await device.async_fade_off()
 
     packets = device._async_send_packets.await_args.args[0]
-    assert packets == [
-        protocol.old_all_zone_packet([67, 61, 15, 0]),
-        protocol.old_all_zone_packet([33, 30, 8, 0]),
-        protocol.old_all_zone_packet([0, 0, 0, 0]),
-        protocol.old_switch_packet(False),
-    ]
+    assert packets == [protocol.old_switch_packet(False)]
     assert device.values["led_on_off"] is False
     assert device.channels_before_off() == original
 
@@ -466,7 +461,7 @@ async def _async_test_set_channels_switches_to_manual_before_write():
     device._async_send_channel_state.assert_called_once()
 
 
-def test_connection_attribute_uses_reachability_not_gatt_only():
+def test_connection_attribute_uses_recent_activity_or_live_gatt():
     from datetime import UTC, datetime, timedelta
 
     from custom_components.fluvalble.core.device import REACHABLE_SECONDS
@@ -484,7 +479,8 @@ def test_connection_attribute_uses_reachability_not_gatt_only():
     assert device.attribute("connection")["is_on"] is False
 
     device.connected = True
-    assert device.is_reachable() is False
+    assert device.is_reachable() is True
+    assert device.attribute("connection")["is_on"] is True
     assert device.attribute("connection")["extra"]["gatt_connected"] is True
 
 
@@ -618,3 +614,33 @@ async def _async_test_mesh_native_pro_schedule():
         protocol.mesh_mode_packet(2),
     ]
     assert device.values["mode"] == "professional"
+
+
+def test_mesh_status_populates_native_schedule_readback():
+    device = _make_device(name="PlantPro_AABBCC", model="PlantPro_AABBCC")
+    device.client = _mesh_client()
+    packet = protocol.mesh_set_packet(
+        {
+            protocol.MESH_AUTO_SUNRISE_KEY: bytes([8, 0, 60]),
+            protocol.MESH_AUTO_SUNSET_KEY: bytes([21, 0, 45]),
+            protocol.MESH_AUTO_SLEEP_KEY: bytes([22, 30]),
+            protocol.MESH_AUTO_DAY_LEVELS_KEY: bytes([80, 70, 60, 50, 40]),
+            protocol.MESH_AUTO_NIGHT_LEVELS_KEY: bytes([0, 10, 0, 0, 0]),
+            protocol.MESH_PRO_SCHEDULE_KEY: bytes([1, 12, 30, 10, 20, 30, 40, 50]),
+        }
+    )
+
+    device.decode_update_packet(bytearray(packet))
+
+    assert device.values["native_auto_schedule"]["sunrise"] == {"hour": 8, "minute": 0, "ramp": 60}
+    assert device.values["native_auto_schedule"]["sleep"] == {"hour": 22, "minute": 30}
+    assert device.values["native_pro_schedule"] == [
+        {
+            "minute": 750,
+            "channel_1": 10,
+            "channel_2": 20,
+            "channel_3": 30,
+            "channel_4": 40,
+            "channel_5": 50,
+        }
+    ]

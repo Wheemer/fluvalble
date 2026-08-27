@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-import importlib
 import inspect
 import logging
 from datetime import timedelta
 from pathlib import Path
 import re
-import sys
 from time import monotonic
-from typing import TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import voluptuous as vol
 
@@ -22,7 +20,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_MAC, EVENT_HOMEASSISTANT_STARTED, Platform
 from homeassistant.core import CoreState, HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, format_mac
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 
@@ -47,14 +45,18 @@ _LOGGER = logging.getLogger(__name__)
 class FluvalRuntimeData:
     """Runtime state for one Fluval config entry (stored on entry.runtime_data)."""
 
-    device: Device | None
+    device: Device
     auto_schedule_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    background_tasks: set[asyncio.Task] = field(default_factory=set)
 
 
-try:
+if TYPE_CHECKING:
     FluvalConfigEntry: TypeAlias = ConfigEntry[FluvalRuntimeData]
-except TypeError:  # pragma: no cover - stubbed test ConfigEntry isn't generic
-    FluvalConfigEntry: TypeAlias = ConfigEntry  # type: ignore[misc,assignment]
+else:
+    try:
+        FluvalConfigEntry = ConfigEntry[FluvalRuntimeData]
+    except TypeError:  # pragma: no cover - stubbed test ConfigEntry isn't generic
+        FluvalConfigEntry = ConfigEntry
 
 DISCOVERY_LOG_INTERVAL = 5
 SERVICE_SET_CHANNELS = "set_channels"
@@ -72,6 +74,7 @@ STORAGE_VERSION = 1
 STARTUP_SCHEDULE_RETRY_SECONDS = 5
 STARTUP_SCHEDULE_RETRY_COUNT = 12
 MAX_SCHEDULE_POINTS = 96
+MAX_NATIVE_PRO_SCHEDULE_POINTS = 12
 SCHEDULE_CHANNELS = ("red", "green", "blue", "white", "channel_5")
 SCHEDULE_POINT_FIELDS = {"time", *SCHEDULE_CHANNELS}
 NATIVE_AUTO_TIME_FIELDS = {"hour", "minute"}
@@ -104,6 +107,38 @@ def _validate_schedule_points(points: object) -> list[dict]:
     return validated
 
 
+def _validate_native_pro_schedule_points(points: object) -> list[dict]:
+    """Validate Plant Pro points without collapsing its five real channels."""
+    if not isinstance(points, list) or not 2 <= len(points) <= MAX_NATIVE_PRO_SCHEDULE_POINTS:
+        raise vol.Invalid(
+            f"Native Plant Pro Professional schedules require 2 to {MAX_NATIVE_PRO_SCHEDULE_POINTS} points"
+        )
+
+    aliases = {
+        "channel_1": "red",
+        "channel_2": "green",
+        "channel_3": "blue",
+        "channel_4": "white",
+        "channel_5": "channel_5",
+    }
+    allowed = {"time", *NATIVE_LEVEL_FIELDS, *SCHEDULE_CHANNELS}
+    validated: list[dict] = []
+    for point in points:
+        if not isinstance(point, dict) or set(point) - allowed:
+            raise vol.Invalid("Each native schedule point must contain only time and channel_1 through channel_5")
+        time_value = point.get("time")
+        if not isinstance(time_value, str) or re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", time_value) is None:
+            raise vol.Invalid("Native schedule times must use HH:MM in the 24-hour range")
+        validated_point: dict[str, str | int] = {"time": time_value}
+        for channel, legacy_name in aliases.items():
+            value = point.get(channel, point.get(legacy_name, 0))
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
+                raise vol.Invalid(f"{channel} must be an integer from 0 to 100")
+            validated_point[channel] = value
+        validated.append(validated_point)
+    return validated
+
+
 def _validate_time_dict(value: object, *, ramp: bool = False) -> dict:
     """Validate a native Plant Pro schedule time object."""
     fields = NATIVE_AUTO_TIME_RAMP_FIELDS if ramp else NATIVE_AUTO_TIME_FIELDS
@@ -118,8 +153,8 @@ def _validate_time_dict(value: object, *, ramp: bool = False) -> dict:
     result = {"hour": hour, "minute": minute}
     if ramp:
         ramp_value = value.get("ramp", 0)
-        if isinstance(ramp_value, bool) or not isinstance(ramp_value, int) or not 0 <= ramp_value <= 255:
-            raise vol.Invalid("ramp must be an integer from 0 to 255")
+        if isinstance(ramp_value, bool) or not isinstance(ramp_value, int) or not 0 <= ramp_value <= 240:
+            raise vol.Invalid("ramp must be an integer from 0 to 240")
         result["ramp"] = ramp_value
     return result
 
@@ -201,7 +236,7 @@ NATIVE_PRO_SCHEDULE_SERVICE_SCHEMA = vol.Schema(
     {
         vol.Optional("entry_id"): str,
         vol.Optional("mac"): str,
-        vol.Required("points"): _validate_schedule_points,
+        vol.Required("points"): _validate_native_pro_schedule_points,
         vol.Optional("activate", default=True): bool,
     }
 )
@@ -223,45 +258,11 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
-def _manifest_version() -> str:
-    """Return the installed manifest version for reload fingerprints."""
-    return "0.0.32"
-
-
-def _reload_package_modules() -> None:
-    """Reload loaded Fluval modules so config-entry reload picks up disk changes."""
-    package = __name__
-    prefix = f"{package}."
-    module_names = [
-        name
-        for name, module in sys.modules.items()
-        if (name == package or name.startswith(prefix)) and getattr(module, "__spec__", None) is not None
-    ]
-    module_names.sort(key=lambda name: (name.count("."), name), reverse=True)
-
-    reloaded = 0
-    for name in module_names:
-        module = sys.modules.get(name)
-        if module is None:
-            continue
-        importlib.reload(module)
-        reloaded += 1
-
-    _LOGGER.info(
-        "Fluval package reloaded from disk (version=%s modules=%s)",
-        _manifest_version(),
-        reloaded,
-    )
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bool:
     """Set up Fluval Aquarium LED from a config entry.
 
     Create typed runtime data, forward platforms, and register unload callbacks.
     """
-    _reload_package_modules()
-    from .core.device import Device as RuntimeDevice  # noqa: PLC0415
-
     hass.data.setdefault(DOMAIN, {})
     await _register_static_paths(hass)
     _register_websocket(hass)
@@ -279,13 +280,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
         hass.config_entries.async_update_entry(entry, unique_id=desired_unique_id)
 
     _migrate_legacy_registry_entries(hass, entry, mac)
+    _cleanup_duplicate_devices(hass, entry, mac)
 
     ping_interval = entry.options.get(CONF_PING_INTERVAL, DEFAULT_PING_INTERVAL)
     active_time = entry.options.get(CONF_ACTIVE_TIME, DEFAULT_ACTIVE_TIME)
     config_data = {**dict(entry.data), **dict(entry.options)}
 
     _LOGGER.info("Fluval setup entry %s mac=%s", entry.entry_id, mac)
-    device = RuntimeDevice(
+    device = Device(
         entry.title,
         hass=hass,
         config_data=config_data,
@@ -305,6 +307,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
 
     runtime = FluvalRuntimeData(device=device)
     entry.runtime_data = runtime
+
+    def create_runtime_task(coroutine) -> asyncio.Task:
+        """Create a task owned by this config entry and track it for unload."""
+        task = hass.async_create_task(coroutine)
+        runtime.background_tasks.add(task)
+        task.add_done_callback(runtime.background_tasks.discard)
+        return task
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -330,17 +339,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
             bluetooth.BluetoothScanningMode.ACTIVE,
         )
     )
+
+    @callback
+    def run_auto_schedule(_now) -> None:
+        create_runtime_task(_async_run_auto_schedule(hass, entry.entry_id))
+
     entry.async_on_unload(
         async_track_time_interval(
             hass,
-            lambda now: hass.loop.call_soon_threadsafe(
-                lambda: hass.async_create_task(_async_run_auto_schedule(hass, entry.entry_id))
-            ),
+            run_auto_schedule,
             timedelta(minutes=1),
         )
     )
     if hass.state is CoreState.running:
-        hass.async_create_task(_async_apply_startup_schedule(hass, entry.entry_id))
+        create_runtime_task(_async_apply_startup_schedule(hass, entry.entry_id))
     else:
         startup_listener_fired = False
 
@@ -348,7 +360,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
         def _apply_startup_schedule_once(_event) -> None:
             nonlocal startup_listener_fired
             startup_listener_fired = True
-            hass.create_task(_async_apply_startup_schedule(hass, entry.entry_id))
+            create_runtime_task(_async_apply_startup_schedule(hass, entry.entry_id))
 
         remove_startup_listener = hass.bus.async_listen_once(
             EVENT_HOMEASSISTANT_STARTED,
@@ -365,14 +377,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
         runtime.device.start_persistent_connection()
     _LOGGER.info("Device %s ready", mac)
     return True
-
-
-async def async_reload_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bool:
-    """Reload a Fluval config entry using the standard unload/setup lifecycle."""
-    unload_ok = await async_unload_entry(hass, entry)
-    if not unload_ok:
-        return False
-    return await async_setup_entry(hass, entry)
 
 
 @callback
@@ -392,6 +396,64 @@ def _migrate_legacy_registry_entries(hass: HomeAssistant, entry: ConfigEntry, ma
         if device_entry.serial_number == mac:
             _LOGGER.info("Clearing MAC address from serial number for %s", device_entry.id)
             device_registry.async_update_device(device_entry.id, serial_number=None)
+
+
+@callback
+def _cleanup_duplicate_devices(hass: HomeAssistant, entry: ConfigEntry, mac: str) -> None:
+    """Merge old Fluval device-registry rows into the canonical MAC device.
+
+    Older releases changed identifiers and connections several times. Only
+    remove a duplicate when a canonical MAC device already exists and the
+    duplicate is owned exclusively by this config entry.
+    """
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+    entries = list(dr.async_entries_for_config_entry(device_registry, entry.entry_id))
+    if len(entries) < 2:
+        return
+
+    normalized_mac = str(format_mac(mac)).lower()
+
+    def is_canonical(device_entry) -> bool:
+        identifiers: set[tuple[Any, Any]] = getattr(device_entry, "identifiers", set()) or set()
+        connections: set[tuple[Any, Any]] = getattr(device_entry, "connections", set()) or set()
+        return any(
+            str(domain) == DOMAIN and str(identifier).lower() == normalized_mac for domain, identifier in identifiers
+        ) or any(
+            str(connection_type) == CONNECTION_BLUETOOTH and str(address).lower() == normalized_mac
+            for connection_type, address in connections
+        )
+
+    canonical = next((device_entry for device_entry in entries if is_canonical(device_entry)), None)
+    if canonical is None:
+        return
+
+    all_entities = list(er.async_entries_for_config_entry(entity_registry, entry.entry_id))
+    for duplicate in entries:
+        if duplicate.id == canonical.id:
+            continue
+
+        foreign_entries = [
+            entity
+            for entity in getattr(entity_registry, "entities", {}).values()
+            if getattr(entity, "device_id", None) == duplicate.id
+            and getattr(entity, "config_entry_id", None) != entry.entry_id
+        ]
+        if foreign_entries:
+            _LOGGER.warning(
+                "Keeping duplicate Fluval device %s because another integration still references it",
+                duplicate.id,
+            )
+            continue
+
+        for entity in all_entities:
+            if getattr(entity, "device_id", None) == duplicate.id:
+                entity_registry.async_update_entity(entity.entity_id, device_id=canonical.id)
+        _LOGGER.info("Removing duplicate Fluval device registry entry %s", duplicate.id)
+        device_registry.async_remove_device(duplicate.id)
 
 
 async def _register_static_paths(hass: HomeAssistant) -> None:
@@ -604,12 +666,15 @@ def _register_websocket(hass: HomeAssistant) -> None:
             return
 
         saved = await _async_load_schedule_data(hass, entry_id)
+        device = _device_for_entry(hass, entry_id)
         connection.send_result(
             msg["id"],
             {
                 "entry_id": entry_id,
                 "points": saved.get("points"),
                 "mode": saved.get("mode", "manual"),
+                "native_auto_schedule": (device.values.get("native_auto_schedule") if device is not None else None),
+                "native_pro_schedule": (device.values.get("native_pro_schedule") if device is not None else None),
             },
         )
 
@@ -644,7 +709,7 @@ async def _async_load_schedule(hass: HomeAssistant, entry_id: str) -> list | Non
 
 async def _async_load_schedule_data(hass: HomeAssistant, entry_id: str) -> dict:
     """Load one saved schedule record from storage."""
-    store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+    store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
     data = await store.async_load() or {}
     schedules = data.get("schedules", {})
     saved = schedules.get(entry_id)
@@ -666,7 +731,7 @@ async def _async_save_schedule(
     mode: str | None = None,
 ) -> None:
     """Save one schedule to storage."""
-    store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+    store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
     data = await store.async_load() or {}
     schedules = data.setdefault("schedules", {})
     existing = schedules.get(entry_id)
@@ -876,6 +941,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> b
 
     runtime = getattr(entry, "runtime_data", None)
     if isinstance(runtime, FluvalRuntimeData):
-        await runtime.device.async_shutdown()
+        tasks = list(runtime.background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        runtime.background_tasks.clear()
+        if runtime.device is not None:
+            await runtime.device.async_shutdown()
 
     return True

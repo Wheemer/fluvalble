@@ -231,7 +231,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             selected = user_input.get(CONF_MAC)
             if selected == MANUAL_ENTRY:
                 return await self.async_step_manual()
-            mac = normalize_mac(selected)
+            mac = normalize_mac(str(selected or ""))
             if MAC_REGEX.match(mac):
                 await self.async_set_unique_id(unique_id_from_mac(mac))
                 self._abort_if_unique_id_configured()
