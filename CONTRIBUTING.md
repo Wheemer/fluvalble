@@ -21,7 +21,6 @@ This repository uses a `dev` → `main` promotion model:
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-pip install pre-commit
 pre-commit install
 
 # 2. Run the test suite
@@ -30,6 +29,14 @@ pytest tests/ -v
 # 3. Lint + format
 ruff check custom_components/ tests/
 ruff format --check custom_components/ tests/
+```
+
+Direct development dependencies are pinned in `requirements.in`, and
+`requirements.txt` is the complete reproducible lock used by CI. After changing
+`requirements.in`, regenerate the lock with:
+
+```bash
+uv pip compile requirements.in --python-version 3.11 --universal --generate-hashes --output-file requirements.txt
 ```
 
 ## Tests

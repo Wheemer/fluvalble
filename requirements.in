@@ -1,0 +1,13 @@
+# Direct development, CI, and asset-generation dependencies.
+# Keep exact versions so Dependabot can propose updates; regenerate
+# requirements.txt with the command recorded in that generated file.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+voluptuous==0.16.0
+ruff==0.16.4
+mypy==2.3.1
+pre-commit==4.6.2
+uv==0.12.6
+pillow==12.3.0
+cairosvg==2.9.0
