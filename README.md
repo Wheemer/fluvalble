@@ -28,7 +28,7 @@ Fluval BLE turns compatible Fluval aquarium lights into first-class Home Assista
 | **Local-first control** | Talk directly to the LED fixture over BLE; no internet, cloud account, or app login required. |
 | **Light** | Real Home Assistant `light` entity with on/off, brightness, and colour. **Plant/Marine**: RGB picker translated to/from Rose·Blue·CW·PW·WW. **Plant Pro / 4.0**: RGB picker translated to/from Red·Blue·Cool White·Warm White·Amber. **AquaSky**: native RGBW. |
 | **Mode** | Select **Manual**, **Automatic**, or **Professional**. Changing colour or brightness switches to Manual when needed. |
-| **Native effects** | Classic AquaSky-compatible controllers expose the 11 verified FluvalSmart dynamic IDs. Plant Pro / 4.0 exposes the four Sun/Moon scene indices present in FluvalConnect. Effects are protocol-family specific. |
+| **Native effects** | Classic controllers expose 11 FluvalSmart effect IDs mapped from FluvalConnect; the command path is hardware-tested on product `0x0103`, but every visual effect has not been validated on every classic model. Plant Pro / 4.0 exposes the four Sun/Moon scene indices found in FluvalConnect and cross-checked against the credited hardware project. Effects are protocol-family specific. |
 | **Native schedules** | Plant Pro / 4.0 can write and read native Auto sunrise/sunset and Professional schedules directly in the fixture. Professional schedules are limited to 12 points. |
 | **Clock sync** | Syncs the lamp RTC on connect (and via a **Sync clock** button). |
 | **Reachable** | Shows whether the lamp was seen recently over BLE (not the same as an idle GATT session). |
@@ -44,7 +44,7 @@ Support depends on the controller protocol, not only the retail product name.
 
 | Protocol/profile | Known families | Control status | Native schedule/effect status |
 |---|---|---|---|
-| Classic encrypted `1000/1001/1002` | AquaSky 2.0, Plant/Marine/Reef 3.0-era and first-generation BLE controllers | Power, mode, four/five channels, clock and state readback. Product `0x0103` is hardware-verified as four-channel RGBW. | Classic dynamic IDs 1-11 are exposed on compatible controllers. Fixture-native Auto/Pro scheduling is not yet exposed. |
+| Classic encrypted `1000/1001/1002` | AquaSky 2.0, Plant/Marine/Reef 3.0-era and first-generation BLE controllers | Power, mode, four/five channels, clock and state readback. Product `0x0103` is hardware-verified as four-channel RGBW. | APK-mapped dynamic IDs 1-11 are exposed on compatible controllers; visual behavior can vary by firmware and is not verified across every model. Fixture-native Auto/Pro scheduling is not yet exposed. |
 | AquaSky 3.0 `FACEBD` CBOR | AquaSky 3.0 | Power, mode, channels, clock and state readback. | HA-managed schedules work; complete fixture-native schedules/effects are not decoded. |
 | Plant Pro / 4.0 `FFF0/FFF1/FFF2` CBOR | Plant Pro and protocol-compatible Plant/Reef/Nano 4.0 controllers | Power, mode, five channels and state readback. Plant Pro is hardware-validated by the credited reference project; other 4.0 variants still need testers. | Native Auto/Pro write and readback are implemented. Four FluvalConnect Sun/Moon scene indices are exposed; keys 14-22 are not fully decoded. |
 
@@ -54,7 +54,7 @@ FluvalConnect also lists Siena 2.0, Roma 2.0, Shaker 2.0, V&V and other newer pr
 
 ## Requirements
 
-- **Home Assistant 2024.1.0** or later with a working **Bluetooth** stack (built-in or add-on Bluetooth adapter).
+- **Home Assistant 2025.8.0** or later with a working **Bluetooth** stack (built-in or add-on Bluetooth adapter). The integration uses Home Assistant's `OptionsFlowWithReload` lifecycle helper introduced in 2025.8.
 - The Fluval light must be in range and powered on so it advertises over BLE.
 - Your HA host (or the machine running the Bluetooth proxy) must be able to see the light in BLE scans.
 
@@ -107,43 +107,47 @@ No cloud account or app login is needed; the integration talks directly to the l
 
 ---
 
+## Connection options
+
+Open **Settings → Devices & services → Fluval Aquarium LED → Configure**. Saving
+these options unloads and reloads only the config entry; it does not restart Home
+Assistant Core.
+
+| Option | Range/default | Purpose |
+|---|---|---|
+| **Lamp type** | Auto-detect (default), Plant/Marine 5-channel, Plant Pro/4.0, AquaSky 2.0, AquaSky 3.0/FACEBD | Override detection when the colour model or channel profile is wrong. |
+| **BLE command encoding** | FluvalConnect random-key (default), fixed XOR `0x0E`, zero-key envelope | Keep the recommended FluvalConnect encoding unless protocol evidence shows that a legacy controller needs another envelope. |
+| **Keep-alive interval** | 5-60 seconds; default 10 | Controls how often an open GATT session is read. |
+| **Active connection window** | 0-600 seconds; default 0 | `0` keeps GATT connected; a positive value disconnects after that many idle seconds and reconnects on demand. Use a finite window when FluvalConnect or a Fluval Gateway must share a Plant Pro/4.0 fixture. |
+
+---
+
+## Integration actions
+
+The integration registers six Home Assistant actions. With one configured Fluval
+light, the target can be omitted. With multiple lights, provide either `entry_id`
+or `mac`. The Home Assistant action editor displays the full field schema from
+[`services.yaml`](custom_components/fluvalble/services.yaml).
+
+| Action | Purpose |
+|---|---|
+| `fluvalble.set_channels` | Set one or more physical channel positions, with an optional ramp. The legacy `red`/`green`/`blue`/`white` field names map to channels 1-4; the light entity performs the configured profile's colour translation. |
+| `fluvalble.preview_schedule` | Compress and physically preview an HA-managed 24-hour channel schedule. |
+| `fluvalble.stop_preview` | Stop an active physical preview and restore the appropriate schedule state. |
+| `fluvalble.save_schedule` | Save an HA-managed schedule and its Manual/Auto/Professional mode. |
+| `fluvalble.set_native_auto_schedule` | Write Plant Pro/4.0 sunrise, sunset, sleep, day-level, and night-level values into the fixture. |
+| `fluvalble.set_native_pro_schedule` | Write 2-12 Plant Pro/4.0 Professional points into the fixture. |
+
+---
+
 ## Lovelace dashboard cards
 
 Optional dashboard cards are available for AquaSky 3.0 schedule editing,
 spectrum bar preview, and wavelength preview. See
 [`docs/lovelace-cards.md`](docs/lovelace-cards.md) for setup instructions,
-example YAML, usage notes, and preview safety guidance.
-
-### Fixture-native Plant Pro / 4.0 schedules
-
-Home Assistant-managed schedules and fixture-native schedules are separate.
-The dashboard card stores an HA schedule that HA applies over time. The two
-native services write the schedule into a compatible controller so it continues
-running without Home Assistant:
-
-```yaml
-service: fluvalble.set_native_auto_schedule
-data:
-  sunrise: {hour: 8, minute: 0, ramp: 60}
-  sunset: {hour: 21, minute: 0, ramp: 60}
-  sleep: {hour: 22, minute: 30}
-  day_levels: {channel_1: 80, channel_2: 70, channel_3: 60, channel_4: 50, channel_5: 40}
-  night_levels: {channel_1: 0, channel_2: 10, channel_3: 0, channel_4: 0, channel_5: 0}
-  activate: true
-```
-
-```yaml
-service: fluvalble.set_native_pro_schedule
-data:
-  points:
-    - {time: "08:00", channel_1: 0, channel_2: 0, channel_3: 0, channel_4: 0, channel_5: 0}
-    - {time: "12:00", channel_1: 60, channel_2: 60, channel_3: 60, channel_4: 60, channel_5: 60}
-  activate: true
-```
-
-Professional schedules accept 2-12 points. Native schedule readback appears in
-redacted diagnostics and in the `fluvalble/get_schedule` websocket response
-after the controller reports its status.
+example YAML, usage notes, and preview safety guidance. These HA-managed
+schedules are separate from the [fixture-native Plant Pro/4.0 schedules](#native-plant-pro--40-schedules)
+stored in compatible controllers.
 
 ---
 
@@ -161,7 +165,10 @@ After setup you'll see one device with entities like:
 
 Redacted downloadable diagnostics are available from the Home Assistant device page. They retain protocol/profile information while removing Bluetooth addresses, advertised names, manufacturer payloads and registry identifiers.
 
-Entity IDs look like `light.b8_80_4f_3d_67_c0_light`. Find exact IDs under **Settings → Devices & services → Fluval Aquarium LED → entities**.
+Home Assistant creates entity IDs from the device and entity names, not directly
+from the Bluetooth address. The examples below use placeholders such as
+`light.your_fluval_light`; find the actual IDs under **Settings → Devices &
+services → Fluval Aquarium LED → entities**.
 
 ---
 
@@ -178,7 +185,7 @@ Entity IDs look like `light.b8_80_4f_3d_67_c0_light`. Find exact IDs under **Set
   action:
     - service: light.turn_on
       target:
-        entity_id: light.b8_80_4f_3d_67_c0_light
+        entity_id: light.your_fluval_light
 
 - id: fluval_evening
   alias: "Tank light off at sunset"
@@ -188,7 +195,7 @@ Entity IDs look like `light.b8_80_4f_3d_67_c0_light`. Find exact IDs under **Set
   action:
     - service: light.turn_off
       target:
-        entity_id: light.b8_80_4f_3d_67_c0_light
+        entity_id: light.your_fluval_light
 ```
 
 **Dim the light when you're away**
@@ -204,7 +211,7 @@ Entity IDs look like `light.b8_80_4f_3d_67_c0_light`. Find exact IDs under **Set
   action:
     - service: light.turn_on
       target:
-        entity_id: light.b8_80_4f_3d_67_c0_light
+        entity_id: light.your_fluval_light
       data:
         brightness_pct: 20
 ```
@@ -216,7 +223,7 @@ Entity IDs look like `light.b8_80_4f_3d_67_c0_light`. Find exact IDs under **Set
   alias: "Tank light unreachable"
   trigger:
     - platform: state
-      entity_id: binary_sensor.b8_80_4f_3d_67_c0_connection
+      entity_id: binary_sensor.your_fluval_reachable
       to: "off"
   action:
     - service: notify.mobile

@@ -5,6 +5,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.1.1] - 2026-08-27
+
+### Fixed
+- Corrected the documented minimum Home Assistant version to 2025.8.0, where
+  `OptionsFlowWithReload` became available, and synchronized the HACS metadata.
+- Legacy switch and per-channel number entities are now removed from the entity
+  registry during config-entry setup, alongside the retired diagnostic entities.
+- Replaced misleading MAC-shaped entity IDs with clearly labeled examples and
+  clarified that Home Assistant assigns the actual entity IDs.
+- Qualified native-effect support according to its real APK and hardware evidence,
+  consolidated duplicate Plant Pro schedule documentation, and documented all
+  connection options and integration actions, including profile-correct physical
+  channel labels in the Home Assistant action UI.
+
+---
+
 ## [0.1.0] - 2026-08-27
 
 This is the first consolidated stable release from the Wheemer fork. It includes
