@@ -3,9 +3,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/MrMooreUK/fluvalble/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/MrMooreUK/fluvalble/ci.yml?branch=main&style=for-the-badge&label=CI"></a>
-  <a href="https://github.com/MrMooreUK/fluvalble/releases"><img alt="Release" src="https://img.shields.io/github/v/release/MrMooreUK/fluvalble?style=for-the-badge&label=release"></a>
-  <a href="https://github.com/MrMooreUK/fluvalble/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-blue?style=for-the-badge"></a>
+  <a href="https://github.com/Wheemer/fluvalble/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Wheemer/fluvalble/ci.yml?branch=main&style=for-the-badge&label=CI"></a>
+  <a href="https://github.com/Wheemer/fluvalble/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Wheemer/fluvalble?style=for-the-badge&label=release"></a>
+  <a href="https://github.com/Wheemer/fluvalble/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-blue?style=for-the-badge"></a>
 </p>
 
 <p align="center">
@@ -26,8 +26,10 @@ Fluval BLE turns compatible Fluval aquarium lights into first-class Home Assista
 | Feature | Description |
 |--------|-------------|
 | **Local-first control** | Talk directly to the LED fixture over BLE; no internet, cloud account, or app login required. |
-| **Light** | Real Home Assistant `light` entity with on/off, brightness, and colour. **Plant/Marine**: RGB picker translated to/from Rose·Blue·CW·PW·WW. **AquaSky**: native RGBW. |
+| **Light** | Real Home Assistant `light` entity with on/off, brightness, and colour. **Plant/Marine**: RGB picker translated to/from Rose·Blue·CW·PW·WW. **Plant Pro / 4.0**: RGB picker translated to/from Red·Blue·Cool White·Warm White·Amber. **AquaSky**: native RGBW. |
 | **Mode** | Select **Manual**, **Automatic**, or **Professional**. Changing colour or brightness switches to Manual when needed. |
+| **Native effects** | Exposes APK-native weather/effect commands through the Home Assistant light effect control. Plant Pro / 4.0 uses the mesh weather selector from FluvalConnect. |
+| **Native schedules** | Plant Pro / 4.0 can write native Auto sunrise/sunset and Professional point schedules directly into the fixture using service calls. |
 | **Clock sync** | Syncs the lamp RTC on connect (and via a **Sync clock** button). |
 | **Reachable** | Shows whether the lamp was seen recently over BLE (not the same as an idle GATT session). |
 | **Auto-discovery** | Home Assistant detects nearby Fluval lights and prompts you to add them. |
@@ -41,10 +43,12 @@ Each device exposes one light as the primary control, plus mode, clock sync, and
 Designed for Fluval aquarium LED fixtures that use BLE (Bluetooth Low Energy), including series such as:
 
 - **Plant 3.0** (5 channels)
+- **Plant Pro / Plant 4.0** (5 channels; experimental)
 - **Reef 3.0** (5 channels)
+- **Reef 4.0 / Reef Nano 4.0** (5 channels; experimental)
 - **Aquasky 2.0** (4 channels RGBW)
 - **Aquasky 3.0 / FACEBD** (up to 5 channels)
-- **Mesh (`fff0`)** CBOR lights (experimental)
+- **Fluval mesh/SPP (`fff0`)** CBOR lights with Fluval-style advertised names (experimental)
 - **Marine 3.0** (5 channels)
 - Other 1st‑gen BLE Fluval LED lights
 
@@ -195,6 +199,72 @@ Replace entity IDs with yours, and `person.you` / `notify.mobile` with your actu
 
 ---
 
+## Native Plant Pro / 4.0 schedules
+
+Plant Pro / 4.0 fixtures can store schedules directly in the light. The regular
+Home Assistant schedule card/services still work, but the native services below
+write into the fixture using the FluvalConnect-style mesh/SPP packet format.
+
+### Native Auto schedule
+
+```yaml
+service: fluvalble.set_native_auto_schedule
+data:
+  entry_id: your_config_entry_id
+  sunrise:
+    hour: 8
+    minute: 0
+    ramp: 60
+  sunset:
+    hour: 21
+    minute: 0
+    ramp: 60
+  sleep:
+    hour: 22
+    minute: 30
+  day_levels:
+    channel_1: 80
+    channel_2: 70
+    channel_3: 60
+    channel_4: 50
+    channel_5: 40
+  night_levels:
+    channel_1: 0
+    channel_2: 10
+    channel_3: 0
+    channel_4: 0
+    channel_5: 0
+  activate: true
+```
+
+### Native Professional schedule
+
+```yaml
+service: fluvalble.set_native_pro_schedule
+data:
+  entry_id: your_config_entry_id
+  points:
+    - time: "08:00"
+      channel_1: 0
+      channel_2: 0
+      channel_3: 0
+      channel_4: 0
+      channel_5: 0
+    - time: "12:30"
+      channel_1: 60
+      channel_2: 60
+      channel_3: 60
+      channel_4: 60
+      channel_5: 60
+  activate: true
+```
+
+For Plant Pro / 4.0, the channels are Red, Blue, Cool White, Warm White, and
+Amber. You can target either `entry_id` or `mac` when more than one Fluval light
+is configured.
+
+---
+
 ## Troubleshooting
 
 | Issue | What to try |
@@ -206,7 +276,7 @@ Replace entity IDs with yours, and `person.you` / `notify.mobile` with your actu
 | **Lamp connected but doesn't respond to actions** | Try the Fluval app first to confirm the light works. If the app works but HA doesn't, open an issue with your model and HA logs. |
 | **Switch doesn't turn light on/off** | Ensure the light model uses the same BLE command set. Try toggling once from the Fluval app, then again from HA. Restart HA and retry. |
 | **Entities show "unavailable"** | The light may be out of range, off, or the BLE connection dropped. Move the light or HA adapter closer; check the connection binary sensor and RSSI. |
-| **Wrong model or channel count** | Open **Configure** on the integration and set **Lamp type** (Plant 5ch / AquaSky 2.0 / AquaSky 3.0). Plant names are detected from the BLE advertisement; FACEBD and status packets refine channel count. |
+| **Wrong model or channel count** | Open **Configure** on the integration and set **Lamp type** (Plant 5ch / Plant Pro 4.0 / AquaSky 2.0 / AquaSky 3.0). Plant names are detected from the BLE advertisement; FACEBD/mesh and status packets refine channel count. |
 | **Schedule wrong after power cut** | Use the **Sync clock** button (also runs automatically on connect). Keep Manual mode if you drive schedules from Home Assistant. |
 | **Channels or mode don't update** | Some features (e.g. mode change) may require the device to send state back; if the firmware doesn't report mode, the dropdown may not reflect external changes. |
 | **Channel sliders don't change the light** | See [Channel sliders troubleshooting](#channel-sliders-dont-change-the-light) below. |
@@ -249,14 +319,16 @@ The integration uses Home Assistant's Bluetooth support to connect to the Fluval
 - On load the integration checks the HA Bluetooth cache for the device; if found it connects immediately.
 - A keep-alive loop pings the light every 10 seconds to maintain the connection and flush any queued commands.
 - If the connection drops, the integration reconnects automatically (several connect retries per command, then waits for the next BLE advertisement).
-- The connection is cleanly closed after 2 minutes of inactivity (no commands sent).
+- By default this fork keeps the GATT session connected (`active_time: 0`) for faster control. Set a non-zero active connection window in **Configure** if you prefer idle disconnects after commands.
 
 ---
 
 ## Credits & license
 
-- Original integration structure and BLE work by [@mrzottel](https://github.com/mrzottel).
-- Community reverse‑engineering of the Fluval BLE protocol (e.g. Planted Tank Forum, ESPHome/fluval projects).
+- Original integration and upstream project by [@MrMooreUK](https://github.com/MrMooreUK) and contributors, building on earlier Fluval BLE work including [@mrzottel](https://github.com/mrzottel).
+- Plant Pro / 4.0 protocol work was informed by FluvalConnect APK reverse-engineering and cross-checked against [cryystyy/fluval-plant-pro-4-homeassistant](https://github.com/cryystyy/fluval-plant-pro-4-homeassistant).
+- Community reverse‑engineering of the Fluval BLE protocol, including Planted Tank Forum and ESPHome/fluval projects.
+- Hardware testing and Home Assistant-focused refinements by [@Wheemer](https://github.com/Wheemer).
 - Licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) in this repo.
 
 ---

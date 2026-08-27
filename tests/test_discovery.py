@@ -32,6 +32,16 @@ def test_plant_nano_name_is_likely_fluval():
     assert is_likely_fluval("Plant Nano_123")
 
 
+def test_plant_pro_name_is_likely_fluval():
+    assert is_likely_fluval("PlantPro_AABBCC")
+    assert is_likely_fluval("Plant Pro 4.0_AABBCC")
+
+
+def test_plant_and_reef_4_names_are_likely_fluval():
+    assert is_likely_fluval("Plant 4.0_AABBCC")
+    assert is_likely_fluval("Reef 4.0_AABBCC")
+
+
 def test_bare_plant_name_is_not_fluval():
     assert not is_likely_fluval("Plant Sensor")
     assert not is_likely_fluval("plant")
@@ -45,10 +55,25 @@ def test_facebd_service_uuid_is_likely_fluval():
     assert is_likely_fluval(None, adv)
 
 
-def test_classic_fluval_service_uuid_is_likely_fluval():
+def test_classic_service_uuid_alone_is_not_fluval():
     adv = _advertisement(service_uuids=["00001000-0000-1000-8000-00805f9b34fb"])
 
+    assert not is_likely_fluval(None, adv)
+
+
+def test_classic_fluval_manufacturer_payload_is_likely_fluval():
+    adv = _advertisement(
+        service_uuids=["00001000-0000-1000-8000-00805f9b34fb"],
+        manufacturer_data={12592: bytes.fromhex("3438303130330000000000000000000000000000")},
+    )
+
     assert is_likely_fluval(None, adv)
+
+
+def test_veepeak_obd2_is_not_fluval_even_with_classic_uuid():
+    adv = _advertisement(service_uuids=["00001000-0000-1000-8000-00805f9b34fb"])
+
+    assert not is_likely_fluval("VEEPEAK", adv)
 
 
 def test_mesh_service_uuid_alone_is_not_fluval():
@@ -66,19 +91,29 @@ def test_mesh_with_fluval_name_is_likely_fluval():
 
 
 def test_detect_model_plant_not_aquasky():
-    assert detect_model("Plant 3.0_AABBCC", None) == "Plant 3.0 Bluetooth LED"
+    assert detect_model("Plant 3.0_AABBCC", None) == "Plant 3.0_AABBCC"
 
 
 def test_detect_model_plant_nano():
-    assert detect_model("Plant Nano_123", None) == "Plant Nano Bluetooth LED"
+    assert detect_model("Plant Nano_123", None) == "Plant Nano_123"
+
+
+def test_detect_model_plant_pro_4():
+    assert detect_model("PlantPro_AABBCC", None) == "PlantPro_AABBCC"
+    assert detect_model("Plant Pro 4.0_AABBCC", None) == "Plant Pro 4.0_AABBCC"
+
+
+def test_detect_model_plant_and_reef_4():
+    assert detect_model("Plant 4.0_AABBCC", None) == "Plant 4.0_AABBCC"
+    assert detect_model("Reef 4.0_AABBCC", None) == "Reef 4.0_AABBCC"
 
 
 def test_detect_model_from_aquasky_name():
-    assert detect_model("AquaSky3.0_2F3176", None) == "AquaSky 3.0 Bluetooth LED"
+    assert detect_model("AquaSky3.0_2F3176", None) == "AquaSky3.0_2F3176"
 
 
 def test_detect_model_aquasky_2():
-    assert detect_model("AquaSky2.0_ABCD", None) == "AquaSky 2.0 Bluetooth LED"
+    assert detect_model("AquaSky2.0_ABCD", None) == "AquaSky2.0_ABCD"
 
 
 def test_discovery_metadata_stores_protocol_context():
@@ -89,6 +124,6 @@ def test_discovery_metadata_stores_protocol_context():
 
     metadata = discovery_metadata("AquaSky3.0_2F3176", adv)
 
-    assert metadata[CONF_MODEL] == "AquaSky 3.0 Bluetooth LED"
+    assert metadata[CONF_MODEL] == "AquaSky3.0_2F3176"
     assert metadata[CONF_SERVICE_UUIDS] == ["facebd00-7261-6262-6974-696f74626c65"]
     assert metadata[CONF_SERVICE_DATA] == {"facebd00": "0102"}

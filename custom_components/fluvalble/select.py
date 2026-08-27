@@ -1,6 +1,5 @@
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -15,14 +14,14 @@ def create_entities(device: Device) -> list:
     return [FluvalSelect(device, s) for s in device.selects()]
 
 
-async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_entities: AddEntitiesCallback):
-    runtime = config_entry.runtime_data
-    device = runtime.device
-
-    if device:
-        add_entities(create_entities(device))
-    else:
-        runtime.pending_add_entities[Platform.SELECT] = add_entities
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Fluval selects from a config entry."""
+    del hass
+    add_entities(create_entities(config_entry.runtime_data.device))
 
 
 class FluvalSelect(FluvalEntity, SelectEntity):

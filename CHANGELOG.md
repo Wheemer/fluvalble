@@ -8,6 +8,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Plant Pro / Plant 4.0 BLE support using the FluvalConnect `fff0`/`fff1`/`fff2`
+  mesh/SPP protocol (`0xD1` + CBOR).
+- Native Plant Pro / 4.0 weather effects through the Home Assistant light
+  effect control.
+- Native Plant Pro / 4.0 Auto schedule writes using the fixture's sunrise,
+  sunset, sleep, day-level, and night-level packet fields.
+- Native Plant Pro / 4.0 Professional schedule writes using fixture-side
+  point-schedule storage.
+- Plant Pro / 4.0 lamp profile with Red / Blue / Cool White / Warm White /
+  Amber channel labels.
+- Bluetooth discovery matchers for Plant Pro, Plant 4.0, Reef 4.0, and Reef
+  Nano 4.0 names while preserving strict filtering against generic mesh devices.
+- Tests covering Plant Pro / 4.0 packet shapes, mixed-service GATT resolution,
+  discovery matching, effects, native schedule services, and HA schedule
+  compatibility.
+
+### Changed
+- Default BLE active connection window increased from 120 s to **300 s**; advertisements extend an open session so commands need fewer cold reconnects.
+- **Reachable** binary sensor now re-evaluates when `last_seen` ages out instead of staying stuck on.
+- **`active_time: 0`** keeps the GATT session connected permanently (connects on integration load).
+- **Reachable** reflects recent BLE advertisements only; `gatt_connected` is still exposed in attributes.
+- Default **`active_time` is 0** (always connected) for local use.
+- Mesh / Plant Pro devices that expose both old `1000` and mesh `fff0` services
+  now prefer the mesh `fff2` write and `fff1` notify characteristics.
+- Home Assistant runtime data handling now preserves HA-managed schedule mode and
+  locking across the newer config-entry runtime-data lifecycle.
+
+### Credits
+- Plant Pro / 4.0 packet behavior was informed by FluvalConnect APK
+  reverse-engineering.
+- Plant Pro / 4.0 protocol design was cross-checked against
+  [cryystyy/fluval-plant-pro-4-homeassistant](https://github.com/cryystyy/fluval-plant-pro-4-homeassistant).
+- Hardware behavior and Home Assistant integration refinements by
+  [@Wheemer](https://github.com/Wheemer).
+- Original Fluval BLE integration and upstream project maintained by
+  [@MrMooreUK](https://github.com/MrMooreUK) and prior contributors.
+
+---
+
+## [0.0.32] - 2026-07-21
+
+### Added
 - Real **light entity** with proper translation: Plant/Marine RGB ↔ Rose/Blue/CW/PW/WW (preview matches mix); AquaSky native RGBW.
 - AquaSky 3.0/FACEBD discovery, diagnostics, and write support.
 - Lovelace schedule, spectrum bar, and wavelength preview cards.
@@ -24,6 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Options changes reload the integration so ping/active-time take effect.
 
 ### Fixed
+- Restored AquaSky colours remain synchronized with the Home Assistant icon after power-on.
 - Options Configure gear 500 (`OptionsFlow` / missing `config_entry`) — #16.
 - Plant devices mis-identified as AquaSky — #17.
 - AquaSky 3.0 names no longer forced to 4 channels.

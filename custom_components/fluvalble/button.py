@@ -1,4 +1,4 @@
-"""Button platform for Fluval Aquarium LED diagnostics."""
+"""Button platform for Fluval Aquarium LED."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, Platform
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -20,34 +20,17 @@ PARALLEL_UPDATES = 0
 
 def create_entities(device: Device) -> list:
     """Build the entity list for this platform."""
-    return [
-        FluvalDiagnosticsButton(device, "refresh_diagnostics"),
-        FluvalSyncClockButton(device, "sync_clock"),
-    ]
+    return [FluvalSyncClockButton(device, "sync_clock")]
 
 
-async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_entities: AddEntitiesCallback) -> None:
-    runtime = config_entry.runtime_data
-    device = runtime.device
-
-    if device:
-        add_entities(create_entities(device))
-    else:
-        runtime.pending_add_entities[Platform.BUTTON] = add_entities
-
-
-class FluvalDiagnosticsButton(FluvalEntity, ButtonEntity):
-    """Button to collect copyable BLE diagnostics from the integration."""
-
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    async def async_press(self) -> None:
-        """Collect diagnostics for the configured BLE controller."""
-        report = await self.device.async_collect_diagnostics()
-        if report.get("status") != "ok":
-            _LOGGER.warning("Fluval diagnostics failed: %s", report)
-        else:
-            _LOGGER.info("Fluval diagnostics: %s", report)
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Fluval buttons from a config entry."""
+    del hass
+    add_entities(create_entities(config_entry.runtime_data.device))
 
 
 class FluvalSyncClockButton(FluvalEntity, ButtonEntity):

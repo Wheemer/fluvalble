@@ -13,7 +13,7 @@
   "documentation": "https://github.com/Wheemer/fluvalble",
   "iot_class": "local_push",
   "requirements": [],
-  "version": "0.0.13",
+  "version": "0.0.32",
   "loggers": ["custom_components.fluvalble"],
   "issue_tracker": "https://github.com/Wheemer/fluvalble/issues",
   "bluetooth": [
@@ -28,6 +28,15 @@
     },
     {
       "local_name": "Plant 3*"
+    },
+    {
+      "local_name": "Plant 4*"
+    },
+    {
+      "local_name": "Plant Pro*"
+    },
+    {
+      "local_name": "PlantPro*"
     },
     {
       "local_name": "Plant Nano*"
@@ -45,10 +54,18 @@
       "local_name": "Reef_*"
     },
     {
-      "service_uuid": "00001000-0000-1000-8000-00805f9b34fb"
+      "local_name": "Reef 4*"
     },
     {
-      "service_uuid": "00001002-0000-1000-8000-00805f9b34fb"
+      "local_name": "Reef Nano 4*"
+    },
+    {
+      "service_uuid": "00001000-0000-1000-8000-00805f9b34fb",
+      "manufacturer_id": 12592
+    },
+    {
+      "service_uuid": "00001002-0000-1000-8000-00805f9b34fb",
+      "manufacturer_id": 12592
     },
     {
       "service_uuid": "facebd00-7261-6262-6974-696f74626c65"

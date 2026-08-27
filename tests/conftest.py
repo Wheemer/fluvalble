@@ -10,6 +10,7 @@ there is a single place to update if HA changes its API.
 import enum
 import sys
 import types
+from datetime import UTC, datetime
 import pytest
 from unittest.mock import MagicMock
 
@@ -55,12 +56,13 @@ def _stub_homeassistant():
     def _identity(*args, **kwargs):
         return args[0] if args else None
 
+    vol.Invalid = type("Invalid", (Exception,), {})
     vol.Schema = _Schema
     vol.Optional = _identity
     vol.Required = _identity
-    vol.All = lambda *args, **kwargs: (lambda value: value)
-    vol.Range = lambda *args, **kwargs: (lambda value: value)
-    vol.In = lambda *args, **kwargs: (lambda value: value)
+    vol.All = lambda *args, **kwargs: lambda value: value
+    vol.Range = lambda *args, **kwargs: lambda value: value
+    vol.In = lambda *args, **kwargs: lambda value: value
 
     # ---- homeassistant.exceptions ----
     class HomeAssistantError(Exception):
@@ -80,15 +82,18 @@ def _stub_homeassistant():
         LIGHT = "light"
 
     class EntityCategory(str, enum.Enum):
+        CONFIG = "config"
         DIAGNOSTIC = "diagnostic"
 
     ha_const = types.ModuleType("homeassistant.const")
     ha_const.CONF_MAC = "mac"
+    ha_const.EVENT_HOMEASSISTANT_STARTED = "homeassistant_started"
     ha_const.Platform = Platform
     ha_const.EntityCategory = EntityCategory
 
     # ---- homeassistant.core ----
     ha_core = types.ModuleType("homeassistant.core")
+    ha_core.CoreState = enum.Enum("CoreState", {"running": "running"})
     ha_core.HomeAssistant = MagicMock
     ha_core.ServiceCall = MagicMock
     ha_core.callback = lambda f: f  # passthrough decorator
@@ -133,6 +138,7 @@ def _stub_homeassistant():
     ha_bt.BluetoothScanningMode = MagicMock()
     ha_bt.BluetoothChange = MagicMock
     ha_bt.async_discovered_service_info = MagicMock(return_value=[])
+    ha_bt.async_ble_device_from_address = MagicMock(return_value=None)
     ha_bt.async_last_service_info = MagicMock(return_value=None)
     ha_bt.async_register_callback = MagicMock(return_value=lambda: None)
 
@@ -241,6 +247,11 @@ def _stub_homeassistant():
     # ---- homeassistant.components.light ----
     class ColorMode(str, enum.Enum):
         BRIGHTNESS = "brightness"
+        RGB = "rgb"
+        RGBW = "rgbw"
+
+    class LightEntityFeature(enum.IntFlag):
+        EFFECT = 4
 
     class _FakeLightEntity(_FakeEntity):
         _attr_is_on = None
@@ -251,13 +262,17 @@ def _stub_homeassistant():
     ha_light = types.ModuleType("homeassistant.components.light")
     ha_light.LightEntity = _FakeLightEntity
     ha_light.ColorMode = ColorMode
+    ha_light.LightEntityFeature = LightEntityFeature
     ha_light.ATTR_BRIGHTNESS = "brightness"
+    ha_light.ATTR_EFFECT = "effect"
+    ha_light.ATTR_RGB_COLOR = "rgb_color"
+    ha_light.ATTR_RGBW_COLOR = "rgbw_color"
 
     # ---- homeassistant.components.websocket_api ----
     ha_ws = types.ModuleType("homeassistant.components.websocket_api")
     ha_ws.ActiveConnection = MagicMock
     ha_ws.async_register_command = MagicMock()
-    ha_ws.websocket_command = lambda schema: (lambda func: func)
+    ha_ws.websocket_command = lambda schema: lambda func: func
     ha_ws.async_response = lambda func: func
 
     # ---- homeassistant.helpers.storage ----
@@ -277,6 +292,14 @@ def _stub_homeassistant():
     # ---- homeassistant.helpers.event ----
     ha_event = types.ModuleType("homeassistant.helpers.event")
     ha_event.async_track_time_interval = MagicMock(return_value=lambda: None)
+    ha_event.async_track_point_in_time = MagicMock(return_value=lambda: None)
+
+    # ---- homeassistant.util.dt ----
+    ha_util = types.ModuleType("homeassistant.util")
+    ha_dt = types.ModuleType("homeassistant.util.dt")
+    ha_dt.now = MagicMock(return_value=datetime(2026, 1, 1, 12, 0, tzinfo=UTC))
+    ha_dt.utcnow = MagicMock(return_value=datetime(2026, 1, 1, 12, 0, tzinfo=UTC))
+    ha_util.dt = ha_dt
 
     # ---- register everything in sys.modules ----
     modules = {
@@ -301,6 +324,8 @@ def _stub_homeassistant():
         "homeassistant.helpers.entity_platform": ha_ep,
         "homeassistant.helpers.event": ha_event,
         "homeassistant.helpers.storage": ha_storage,
+        "homeassistant.util": ha_util,
+        "homeassistant.util.dt": ha_dt,
         "homeassistant.components.websocket_api": ha_ws,
     }
     for name, mod in modules.items():
