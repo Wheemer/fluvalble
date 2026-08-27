@@ -28,8 +28,8 @@ Fluval BLE turns compatible Fluval aquarium lights into first-class Home Assista
 | **Local-first control** | Talk directly to the LED fixture over BLE; no internet, cloud account, or app login required. |
 | **Light** | Real Home Assistant `light` entity with on/off, brightness, and colour. **Plant/Marine**: RGB picker translated to/from Rose·Blue·CW·PW·WW. **Plant Pro / 4.0**: RGB picker translated to/from Red·Blue·Cool White·Warm White·Amber. **AquaSky**: native RGBW. |
 | **Mode** | Select **Manual**, **Automatic**, or **Professional**. Changing colour or brightness switches to Manual when needed. |
-| **Native effects** | Exposes APK-native weather/effect commands through the Home Assistant light effect control. Plant Pro / 4.0 uses the mesh weather selector from FluvalConnect. |
-| **Native schedules** | Plant Pro / 4.0 can write native Auto sunrise/sunset and Professional point schedules directly into the fixture using service calls. |
+| **Native effects** | Classic AquaSky-compatible controllers expose the 11 verified FluvalSmart dynamic IDs. Plant Pro / 4.0 exposes the four Sun/Moon scene indices present in FluvalConnect. Effects are protocol-family specific. |
+| **Native schedules** | Plant Pro / 4.0 can write and read native Auto sunrise/sunset and Professional schedules directly in the fixture. Professional schedules are limited to 12 points. |
 | **Clock sync** | Syncs the lamp RTC on connect (and via a **Sync clock** button). |
 | **Reachable** | Shows whether the lamp was seen recently over BLE (not the same as an idle GATT session). |
 | **Auto-discovery** | Home Assistant detects nearby Fluval lights and prompts you to add them. |
@@ -40,19 +40,15 @@ Each device exposes one light as the primary control, plus mode, clock sync, and
 
 ## Supported devices
 
-Designed for Fluval aquarium LED fixtures that use BLE (Bluetooth Low Energy), including series such as:
+Support depends on the controller protocol, not only the retail product name.
 
-- **Plant 3.0** (5 channels)
-- **Plant Pro / Plant 4.0** (5 channels; experimental)
-- **Reef 3.0** (5 channels)
-- **Reef 4.0 / Reef Nano 4.0** (5 channels; experimental)
-- **Aquasky 2.0** (4 channels RGBW)
-- **Aquasky 3.0 / FACEBD** (up to 5 channels)
-- **Fluval mesh/SPP (`fff0`)** CBOR lights with Fluval-style advertised names (experimental)
-- **Marine 3.0** (5 channels)
-- Other 1st‑gen BLE Fluval LED lights
+| Protocol/profile | Known families | Control status | Native schedule/effect status |
+|---|---|---|---|
+| Classic encrypted `1000/1001/1002` | AquaSky 2.0, Plant/Marine/Reef 3.0-era and first-generation BLE controllers | Power, mode, four/five channels, clock and state readback. Product `0x0103` is hardware-verified as four-channel RGBW. | Classic dynamic IDs 1-11 are exposed on compatible controllers. Fixture-native Auto/Pro scheduling is not yet exposed. |
+| AquaSky 3.0 `FACEBD` CBOR | AquaSky 3.0 | Power, mode, channels, clock and state readback. | HA-managed schedules work; complete fixture-native schedules/effects are not decoded. |
+| Plant Pro / 4.0 `FFF0/FFF1/FFF2` CBOR | Plant Pro and protocol-compatible Plant/Reef/Nano 4.0 controllers | Power, mode, five channels and state readback. Plant Pro is hardware-validated by the credited reference project; other 4.0 variants still need testers. | Native Auto/Pro write and readback are implemented. Four FluvalConnect Sun/Moon scene indices are exposed; keys 14-22 are not fully decoded. |
 
-Your light must be controllable via the Fluval (e.g. FluvalSmart / FluvalConnect) app over Bluetooth. If the app can see and control it, this integration can too.
+FluvalConnect also lists Siena 2.0, Roma 2.0, Shaker 2.0, V&V and other newer products. This integration does **not** claim those models until their advertisements, GATT profiles and commands are captured and tested. Being visible in FluvalConnect does not by itself prove protocol compatibility.
 
 ---
 
@@ -118,6 +114,37 @@ spectrum bar preview, and wavelength preview. See
 [`docs/lovelace-cards.md`](docs/lovelace-cards.md) for setup instructions,
 example YAML, usage notes, and preview safety guidance.
 
+### Fixture-native Plant Pro / 4.0 schedules
+
+Home Assistant-managed schedules and fixture-native schedules are separate.
+The dashboard card stores an HA schedule that HA applies over time. The two
+native services write the schedule into a compatible controller so it continues
+running without Home Assistant:
+
+```yaml
+service: fluvalble.set_native_auto_schedule
+data:
+  sunrise: {hour: 8, minute: 0, ramp: 60}
+  sunset: {hour: 21, minute: 0, ramp: 60}
+  sleep: {hour: 22, minute: 30}
+  day_levels: {channel_1: 80, channel_2: 70, channel_3: 60, channel_4: 50, channel_5: 40}
+  night_levels: {channel_1: 0, channel_2: 10, channel_3: 0, channel_4: 0, channel_5: 0}
+  activate: true
+```
+
+```yaml
+service: fluvalble.set_native_pro_schedule
+data:
+  points:
+    - {time: "08:00", channel_1: 0, channel_2: 0, channel_3: 0, channel_4: 0, channel_5: 0}
+    - {time: "12:00", channel_1: 60, channel_2: 60, channel_3: 60, channel_4: 60, channel_5: 60}
+  activate: true
+```
+
+Professional schedules accept 2-12 points. Native schedule readback appears in
+redacted diagnostics and in the `fluvalble/get_schedule` websocket response
+after the controller reports its status.
+
 ---
 
 ## Entities
@@ -130,7 +157,9 @@ After setup you'll see one device with entities like:
 | **Select** | Mode | Manual / Automatic / Professional. |
 | **Button** | Sync clock | Re-sync the lamp RTC (also runs automatically on connect). |
 | **Binary sensor** | Reachable | Lamp seen recently over BLE. |
-| **Sensors** | Signal / Last seen / Diagnostics | RSSI, last advertisement time, BLE diagnostics. |
+| **Sensors** | Signal / Last seen | Raw advertisement RSSI and the last successful BLE activity time. RSSI includes the time of its last advertisement as an attribute. |
+
+Redacted downloadable diagnostics are available from the Home Assistant device page. They retain protocol/profile information while removing Bluetooth addresses, advertised names, manufacturer payloads and registry identifiers.
 
 Entity IDs look like `light.b8_80_4f_3d_67_c0_light`. Find exact IDs under **Settings → Devices & services → Fluval Aquarium LED → entities**.
 
@@ -313,20 +342,24 @@ If you have a different Fluval BLE model and the switch or other controls don't 
 
 ## How it works
 
-The integration uses Home Assistant's Bluetooth support to connect to the Fluval light. Commands (on/off, brightness, mode) are sent as small encrypted BLE packets; the encryption scheme is based on reverse‑engineered protocols used by Fluval's own app and community projects (e.g. [Fluval Plant 3.0 BLE protocol](https://www.plantedtank.net/threads/reverse-engineering-the-fluval-plant-3.0-ble-protocol.1325539/)). No data is sent to Fluval or any third party—everything stays between your HA instance and the fixture.
+The integration uses Home Assistant's Bluetooth support to connect directly to the controller. Classic FluvalSmart controllers use checksummed, encrypted frames. AquaSky 3.0/FACEBD and Plant Pro/4.0 use unencrypted CBOR command maps over their respective GATT characteristics. No light-control data is sent to Fluval or any third party.
 
 **BLE connection lifecycle:**
-- On load the integration checks the HA Bluetooth cache for the device; if found it connects immediately.
-- A keep-alive loop pings the light every 10 seconds to maintain the connection and flush any queued commands.
-- If the connection drops, the integration reconnects automatically (several connect retries per command, then waits for the next BLE advertisement).
-- By default this fork keeps the GATT session connected (`active_time: 0`) for faster control. Set a non-zero active connection window in **Configure** if you prefer idle disconnects after commands.
+- On load the integration checks Home Assistant's Bluetooth cache. With `active_time: 0` it opens the persistent session immediately; finite sessions connect on demand.
+- A keep-alive loop reads at the configured interval while a session is open.
+- Unexpected persistent-session drops schedule an immediate serialized reconnect. Fresh connections use one bounded three-attempt `bleak-retry-connector` cycle rather than nested retry loops.
+- The default remains `active_time: 0` for low command latency. Plant Pro / 4.0 allows only one Bluetooth central, so permanent mode blocks FluvalConnect and the Fluval Gateway while Home Assistant is connected. Select a finite window under **Configure** when app/gateway coexistence matters.
+- RSSI comes only from advertisements. It can remain unchanged while a controller is connected and no longer advertising; this does not mean the value is fabricated.
+
+Home Assistant config-entry reloads unload entities, cancel callbacks/tasks, close BLE, and set the entry up again without restarting Core. Installing changed Python source is different: Home Assistant must load those modules once after installation, so a Core restart is required for a newly installed code version. The integration does not attempt unsafe in-process `importlib.reload()` hot swapping.
 
 ---
 
 ## Credits & license
 
 - Original integration and upstream project by [@MrMooreUK](https://github.com/MrMooreUK) and contributors, building on earlier Fluval BLE work including [@mrzottel](https://github.com/mrzottel).
-- Plant Pro / 4.0 protocol work was informed by FluvalConnect APK reverse-engineering and cross-checked against [cryystyy/fluval-plant-pro-4-homeassistant](https://github.com/cryystyy/fluval-plant-pro-4-homeassistant).
+- Plant Pro / 4.0 transport, command and native-schedule behavior was independently integrated from FluvalConnect APK evidence and cross-checked against the hardware-validated MIT-licensed [cryystyy/fluval-plant-pro-4-homeassistant](https://github.com/cryystyy/fluval-plant-pro-4-homeassistant) project.
+- Historical FluvalSmart Android and controller-firmware repositories by `kw217` were used as protocol documentation only; their source code was not copied because those repositories do not state a software license.
 - Community reverse‑engineering of the Fluval BLE protocol, including Planted Tank Forum and ESPHome/fluval projects.
 - Hardware testing and Home Assistant-focused refinements by [@Wheemer](https://github.com/Wheemer).
 - Licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) in this repo.
