@@ -23,7 +23,7 @@ Fluval BLE uses a dark, premium aquarium-lighting identity: deep navy surfaces, 
 If the SVG artwork changes, regenerate the PNG assets with:
 
 ```bash
-python3 -m pip install pillow cairosvg
+python3 -m pip install -r requirements.txt
 python3 - <<'PY'
 import cairosvg, shutil
 cairosvg.svg2png(url='images/logo.svg', write_to='images/logo.png', output_width=1120, output_height=360)
