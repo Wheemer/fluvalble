@@ -44,6 +44,9 @@ def test_plant_and_reef_4_names_are_likely_fluval():
 
 def test_bare_plant_name_is_not_fluval():
     assert not is_likely_fluval("Plant Sensor")
+    assert not is_likely_fluval("Plant 3 Sensor")
+    assert not is_likely_fluval("Marine 3 Radio")
+    assert not is_likely_fluval("NotFluval diagnostic")
     assert not is_likely_fluval("plant")
     assert not is_likely_fluval("Marine Radio")
     assert not is_likely_fluval("reef")

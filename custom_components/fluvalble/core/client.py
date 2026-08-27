@@ -113,7 +113,7 @@ class Client:
 
         self.ping_future: asyncio.Future | None = None
         self.ping_task: asyncio.Task | None = None
-        self.ping_time = 0
+        self.ping_time: float = 0.0
         self._stopping = False
 
         self.connect_task: asyncio.Task | None = None
@@ -133,6 +133,9 @@ class Client:
         self._command_lock = asyncio.Lock()
         self.last_error: str | None = None
         self.last_write_targets: list[str] = []
+        # FACEBD has no implemented command acknowledgement yet. Keep this
+        # explicit so callers report an unverified write instead of crashing.
+        self.last_write_verified = False
         self.last_command_at = 0.0
         # Classic outbound defaults to FluvalConnect EncodeUtil.encodeMessage,
         # while retaining explicit legacy choices for older controllers.
@@ -154,6 +157,8 @@ class Client:
 
     def _get_characteristic(self, uuid: str) -> BleakGATTCharacteristic | None:
         """Return a characteristic if present, without raising on missing UUIDs."""
+        if self.client is None:
+            return None
         try:
             return self.client.services.get_characteristic(uuid)
         except BleakError:
@@ -317,21 +322,22 @@ class Client:
                 self.last_error = None
                 return self.client
 
-        last_error: Exception | None = None
-        for attempt in range(1, CONNECT_RETRIES + 1):
-            try:
-                self.client = await establish_connection(
-                    BleakClient, self.device, self.device.address, timeout=CONNECT_TIMEOUT
-                )
-                break
-            except (TimeoutError, BleakError, EOFError) as err:
-                last_error = err
-                self.last_error = f"connect attempt {attempt} failed: {type(err).__name__}: {err}"
-                _LOGGER.debug("Fluval connect attempt %s failed", attempt, exc_info=err)
-                await self._safe_disconnect()
-                await asyncio.sleep(attempt)
-        else:
-            raise BleakError(f"Unable to connect to Fluval: {last_error}")
+        # bleak-retry-connector already owns its retry loop. Wrapping it in a
+        # second three-attempt loop caused up to twelve attempts and made an
+        # ordinary reconnect look hung. Keep one bounded connector cycle.
+        try:
+            self.client = await establish_connection(
+                BleakClient,
+                self.device,
+                self.device.address,
+                disconnected_callback=self._on_disconnected,
+                max_attempts=CONNECT_RETRIES,
+                timeout=CONNECT_TIMEOUT,
+            )
+        except (TimeoutError, BleakError, EOFError) as err:
+            self.last_error = f"connect failed: {type(err).__name__}: {err}"
+            await self._safe_disconnect()
+            raise
 
         await self._resolve_characteristics()
         if not self.raw_facebd and not self.raw_mesh:
@@ -355,6 +361,35 @@ class Client:
                 _LOGGER.warning("Fluval post-connect callback failed", exc_info=err)
 
         return self.client
+
+    def _on_disconnected(self, client: BleakClient) -> None:
+        """Update state immediately and restore an opted-in persistent link."""
+        if client is not self.client:
+            return
+        self._classic_session_ready = False
+        self._classic_handshake_done = False
+        self._ready_fired = False
+        if self.status_callback:
+            self.status_callback(False)
+        if self._stopping or self._active_time != 0:
+            return
+        if self.connect_task and not self.connect_task.done():
+            return
+        self.connect_task = asyncio.create_task(self._async_restore_persistent_connection())
+
+    async def _async_restore_persistent_connection(self) -> None:
+        """Reconnect once after an unexpected persistent-session drop."""
+        try:
+            async with self._command_lock:
+                if self._stopping or self._active_time != 0:
+                    return
+                await self._ensure_client()
+                self.ping()
+        except (TimeoutError, BleakError, EOFError) as err:
+            self.last_error = f"persistent reconnect failed: {type(err).__name__}: {err}"
+            _LOGGER.debug("Fluval persistent reconnect failed", exc_info=err)
+        finally:
+            self.connect_task = None
 
     async def _async_request_classic_mtu(self) -> None:
         """Request the OLD-light MTU before enabling notifications (APK order)."""
@@ -573,10 +608,15 @@ class Client:
             response = True
         else:
             response = False
+        payloads: list[bytes | bytearray]
         if self.raw_facebd or self.raw_mesh:
             payloads = [data]
         else:
-            payloads = protocol.encrypted_old_frames(data, dialect=self.wire_dialect)
+            payloads = [bytes(frame) for frame in protocol.encrypted_old_frames(data, dialect=self.wire_dialect)]
+
+        client = self.client
+        if client is None:
+            raise BleakError("Fluval BLE client disconnected before write")
 
         for index, payload in enumerate(payloads):
             log = _LOGGER.info if not self.raw_facebd and not self.raw_mesh else _LOGGER.debug
@@ -589,7 +629,7 @@ class Client:
                 to_hex(data) if index == 0 else "(cont)",
                 to_hex(payload),
             )
-            await self.client.write_gatt_char(uuid, data=payload, response=response)
+            await client.write_gatt_char(uuid, data=payload, response=response)
             if index + 1 < len(payloads):
                 # Each encoded chunk is a separate APK write request. FluvalConnect
                 # configures requestWriteDelayMillis(10) (package delay is 5 ms).
@@ -754,11 +794,11 @@ class Client:
         await self.disconnect()
 
 
-def decrypt(data: bytearray) -> bytearray:
+def decrypt(data: bytearray) -> bytes:
     """Decrypt a packet that has been received by the Fluval."""
     return encryption.decrypt(data)
 
 
-def to_hex(data: bytes) -> str:
+def to_hex(data: bytes | bytearray) -> str:
     """Print a byte array as hex strings for debugging."""
     return " ".join(format(x, "02x") for x in data)

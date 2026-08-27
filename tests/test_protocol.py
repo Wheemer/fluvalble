@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 
+import pytest
+
 from custom_components.fluvalble.core import protocol
 
 
@@ -173,6 +175,50 @@ def test_plant_pro_mesh_pro_schedule_packet_matches_apk_blob_shape():
     decoded = protocol.decode_cbor_update(packet)
 
     assert decoded[protocol.MESH_PRO_SCHEDULE_KEY] == bytes([2, 8, 0, 1, 2, 3, 4, 5, 12, 30, 10, 20, 30, 40, 50])
+
+
+def test_plant_pro_mesh_schedule_readback_decoders():
+    auto = protocol.decode_mesh_auto_schedule(
+        {
+            8: bytes([8, 0, 60]),
+            9: bytes([21, 0, 45]),
+            10: bytes([0xFF, 0xFF]),
+            11: bytes([80, 70, 60, 50, 40]),
+            12: bytes([0, 10, 0, 0, 0]),
+        }
+    )
+    pro = protocol.decode_mesh_pro_schedule(bytes([2, 8, 0, 1, 2, 3, 4, 5, 12, 30, 10, 20, 30, 40, 50]))
+
+    assert auto == {
+        "sunrise": {"hour": 8, "minute": 0, "ramp": 60},
+        "sunset": {"hour": 21, "minute": 0, "ramp": 45},
+        "sleep": None,
+        "day_levels": [80, 70, 60, 50, 40],
+        "night_levels": [0, 10, 0, 0, 0],
+    }
+    assert pro == [
+        {"minute": 480, "channel_1": 1, "channel_2": 2, "channel_3": 3, "channel_4": 4, "channel_5": 5},
+        {
+            "minute": 750,
+            "channel_1": 10,
+            "channel_2": 20,
+            "channel_3": 30,
+            "channel_4": 40,
+            "channel_5": 50,
+        },
+    ]
+
+
+def test_plant_pro_native_pro_schedule_is_capped_at_twelve_points():
+    points = [{"minute": index * 60} for index in range(13)]
+
+    with pytest.raises(ValueError, match="at most 12 points"):
+        protocol.mesh_pro_schedule_packet(points)
+
+
+def test_invalid_plant_pro_schedule_readback_is_rejected():
+    assert protocol.decode_mesh_pro_schedule(bytes([1, 25, 0, 1, 2, 3, 4, 5])) is None
+    assert protocol.decode_mesh_auto_schedule({8: bytes([25, 0, 60])}) is None
 
 
 def test_plant_pro_mesh_status_strips_d2_header_and_keeps_schedule_blobs():

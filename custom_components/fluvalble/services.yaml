@@ -193,7 +193,7 @@ set_native_auto_schedule:
         text:
     sunrise:
       name: Sunrise
-      description: Object with hour, minute, and ramp duration in minutes.
+      description: Object with hour, minute, and ramp duration from 0 to 240 minutes.
       required: true
       example:
         hour: 8
@@ -203,7 +203,7 @@ set_native_auto_schedule:
         object:
     sunset:
       name: Sunset
-      description: Object with hour, minute, and ramp duration in minutes; this is when ramp-down finishes.
+      description: Object with hour, minute, and ramp duration from 0 to 240 minutes; this is when ramp-down finishes.
       required: true
       example:
         hour: 21
@@ -266,20 +266,20 @@ set_native_pro_schedule:
         text:
     points:
       name: Schedule points
-      description: List of points with time plus red, green, blue, white, and optional channel_5 values.
+      description: Two to 12 points with time plus channel_1 through channel_5. Plant Pro order is Red, Blue, Cool White, Warm White, Amber.
       required: true
       example:
         - time: "08:00"
-          red: 0
-          green: 0
-          blue: 0
-          white: 0
+          channel_1: 0
+          channel_2: 0
+          channel_3: 0
+          channel_4: 0
           channel_5: 0
         - time: "12:00"
-          red: 60
-          green: 60
-          blue: 60
-          white: 60
+          channel_1: 60
+          channel_2: 60
+          channel_3: 60
+          channel_4: 60
           channel_5: 60
       selector:
         object:

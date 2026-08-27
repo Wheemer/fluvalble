@@ -16,8 +16,11 @@ from custom_components.fluvalble import (
     _async_load_schedule_data,
     _async_run_auto_schedule,
     _async_save_schedule,
+    _validate_native_pro_schedule_points,
     _validate_schedule_points,
+    _validate_time_dict,
     async_set_schedule_mode,
+    async_unload_entry,
 )
 from custom_components.fluvalble.core.device import Device
 
@@ -39,6 +42,33 @@ class _FakeHass:
     def __init__(self, device=None):
         runtime = FluvalRuntimeData(device=device)
         self.data = {DOMAIN: {"entry_1": runtime}}
+
+
+def test_unload_cancels_entry_owned_tasks_before_device_shutdown():
+    asyncio.run(_async_test_unload_cancels_entry_owned_tasks())
+
+
+async def _async_test_unload_cancels_entry_owned_tasks():
+    device = MagicMock()
+    device.async_shutdown = AsyncMock()
+    runtime = FluvalRuntimeData(device=device)
+    started = asyncio.Event()
+
+    async def background_work():
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(background_work())
+    runtime.background_tasks.add(task)
+    await started.wait()
+    entry = MagicMock(runtime_data=runtime)
+    hass = MagicMock()
+    hass.config_entries.async_unload_platforms = AsyncMock(return_value=True)
+
+    assert await async_unload_entry(hass, entry)
+
+    assert task.cancelled()
+    device.async_shutdown.assert_awaited_once()
 
 
 def _make_device():
@@ -69,6 +99,45 @@ def test_schedule_validator_limits_schedule_size():
     points = [{"time": "00:00"}, {"time": "00:01"}] * 49
     with pytest.raises(vol.Invalid):
         _validate_schedule_points(points)
+
+
+def test_native_pro_validator_caps_fixture_schedule_at_twelve_points():
+    points = [{"time": f"{hour:02d}:00"} for hour in range(13)]
+
+    with pytest.raises(vol.Invalid, match="2 to 12 points"):
+        _validate_native_pro_schedule_points(points)
+
+
+def test_native_pro_validator_preserves_all_five_fixture_channels():
+    points = [
+        {
+            "time": "08:00",
+            "channel_1": 10,
+            "channel_2": 20,
+            "channel_3": 30,
+            "channel_4": 40,
+            "channel_5": 50,
+        },
+        {"time": "20:00"},
+    ]
+
+    validated = _validate_native_pro_schedule_points(points)
+
+    assert validated[0] == points[0]
+    assert validated[1] == {
+        "time": "20:00",
+        "channel_1": 0,
+        "channel_2": 0,
+        "channel_3": 0,
+        "channel_4": 0,
+        "channel_5": 0,
+    }
+
+
+def test_native_auto_ramp_is_capped_at_four_hours():
+    assert _validate_time_dict({"hour": 8, "minute": 0, "ramp": 240}, ramp=True)["ramp"] == 240
+    with pytest.raises(vol.Invalid, match="0 to 240"):
+        _validate_time_dict({"hour": 8, "minute": 0, "ramp": 241}, ramp=True)
 
 
 def test_schedule_validator_rejects_unknown_fields():

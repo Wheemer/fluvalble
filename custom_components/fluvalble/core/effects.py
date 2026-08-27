@@ -24,14 +24,16 @@ WEATHER_EFFECTS: Mapping[str, int] = {
     "Crescent moon": 11,
 }
 
-# FluvalConnect's Plant Pro / mesh weather picker exposes four weather IDs via
-# DeviceDataKt.weatherMeshIndex = [4, 3, 1, 2]. The UI icons are the mesh
-# variants of sun/lightning, cloudy, full moon, and crescent moon.
+# FluvalConnect's Plant Pro / mesh picker exposes the asset/command indices
+# ``[4, 3, 1, 2]``. The APK resources identify those numbered assets as Sun,
+# Crescent Moon, Full Moon, and Half Moon. Reusing the classic 0x680A names for
+# these IDs made static sun/moon scenes appear as broken lightning/color-cycle
+# effects even though the transmitted mesh IDs were correct.
 MESH_WEATHER_EFFECTS: Mapping[str, int] = {
-    "Colour cycle": 4,
-    "Sun and lightning": 3,
-    "Thunderstorm": 1,
-    "Lightning": 2,
+    "Sun": 4,
+    "Crescent moon": 3,
+    "Full moon": 1,
+    "Half moon": 2,
 }
 
 

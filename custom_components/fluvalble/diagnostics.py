@@ -11,6 +11,20 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
 
+REDACTED = "**REDACTED**"
+REDACT_KEYS = {
+    "address",
+    "advertisement_name",
+    "configured_mac",
+    "mac",
+    "manufacturer_data",
+    "name",
+    "path",
+    "service_data",
+    "title",
+    "unique_id",
+}
+
 
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant,
@@ -35,14 +49,16 @@ async def _build_report(entry: ConfigEntry) -> dict[str, Any]:
     runtime = entry.runtime_data
     fluval = getattr(runtime, "device", None)
     if fluval is None:
-        return {
-            "status": "not_ready",
-            "entry": {
-                "title": entry.title,
-                "data": dict(entry.data),
-                "options": dict(entry.options),
-            },
-        }
+        return _redact_diagnostics(
+            {
+                "status": "not_ready",
+                "entry": {
+                    "title": entry.title,
+                    "data": dict(entry.data),
+                    "options": dict(entry.options),
+                },
+            }
+        )
 
     report = await fluval.async_collect_diagnostics()
     report["entry"] = {
@@ -54,4 +70,17 @@ async def _build_report(entry: ConfigEntry) -> dict[str, Any]:
     report["model"] = fluval.model_name
     report["lamp_profile"] = fluval.lamp_profile
     report["values"] = dict(fluval.values)
-    return report
+    return _redact_diagnostics(report)
+
+
+def _redact_diagnostics(value: Any, *, key: str | None = None) -> Any:
+    """Recursively redact device identifiers while retaining protocol evidence."""
+    if key in REDACT_KEYS:
+        return REDACTED
+    if isinstance(value, dict):
+        return {item_key: _redact_diagnostics(item, key=str(item_key)) for item_key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_diagnostics(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_diagnostics(item) for item in value)
+    return value

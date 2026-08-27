@@ -2,11 +2,21 @@
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from homeassistant.components.light import ATTR_BRIGHTNESS
 
-from custom_components.fluvalble import binary_sensor, button, light, select, sensor
+from custom_components.fluvalble import (
+    _cleanup_duplicate_devices,
+    binary_sensor,
+    button,
+    diagnostics,
+    light,
+    select,
+    sensor,
+)
+from custom_components.fluvalble.core import DOMAIN
 from custom_components.fluvalble.core.device import Device
 
 
@@ -21,6 +31,7 @@ def _make_device():
     )
     device.connected = True
     device.conn_info["rssi"] = -70
+    device.conn_info["rssi_updated_at"] = now
     device.conn_info["last_seen"] = now
     device.diagnostics["status"] = "ok"
     device.values.update(
@@ -76,7 +87,81 @@ def test_diagnostic_entities_update_from_device_attributes():
 
     assert connection._attr_is_on is True
     assert rssi._attr_native_value == -70
+    assert rssi._attr_state_class.value == "measurement"
+    assert rssi._attr_extra_state_attributes["last_advertisement"] == device.conn_info["rssi_updated_at"]
     assert last_seen._attr_native_value == device.conn_info["last_seen"]
+
+
+def test_downloadable_diagnostics_redact_identifiers_but_keep_protocol_fields():
+    report = diagnostics._redact_diagnostics(
+        {
+            "configured_mac": "AA:BB:CC:DD:EE:FF",
+            "name": "PlantPro_AABBCC",
+            "connection_info": {
+                "mac": "AA:BB:CC:DD:EE:FF",
+                "service_uuids": ["0000fff0-0000-1000-8000-00805f9b34fb"],
+                "manufacturer_data": {"12592": "secret"},
+            },
+            "product_id": 259,
+            "channel_count": 4,
+        }
+    )
+
+    assert report["configured_mac"] == diagnostics.REDACTED
+    assert report["name"] == diagnostics.REDACTED
+    assert report["connection_info"]["mac"] == diagnostics.REDACTED
+    assert report["connection_info"]["manufacturer_data"] == diagnostics.REDACTED
+    assert report["connection_info"]["service_uuids"] == ["0000fff0-0000-1000-8000-00805f9b34fb"]
+    assert report["product_id"] == 259
+    assert report["channel_count"] == 4
+
+
+def test_duplicate_device_registry_entries_are_merged_safely(monkeypatch):
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    canonical = SimpleNamespace(
+        id="canonical",
+        identifiers={(DOMAIN, "aa:bb:cc:dd:ee:ff")},
+        connections=set(),
+    )
+    duplicate = SimpleNamespace(id="duplicate", identifiers={(DOMAIN, "legacy")}, connections=set())
+    own_entity = SimpleNamespace(
+        entity_id="sensor.legacy_signal",
+        device_id="duplicate",
+        config_entry_id="entry-id",
+    )
+    device_registry = SimpleNamespace(async_remove_device=MagicMock())
+    entity_registry = SimpleNamespace(
+        entities={own_entity.entity_id: own_entity},
+        async_update_entity=MagicMock(),
+    )
+    monkeypatch.setattr(dr, "async_get", lambda hass: device_registry, raising=False)
+    monkeypatch.setattr(
+        dr,
+        "async_entries_for_config_entry",
+        lambda registry, entry_id: [canonical, duplicate],
+        raising=False,
+    )
+    monkeypatch.setattr(er, "async_get", lambda hass: entity_registry, raising=False)
+    monkeypatch.setattr(
+        er,
+        "async_entries_for_config_entry",
+        lambda registry, entry_id: [own_entity],
+        raising=False,
+    )
+
+    _cleanup_duplicate_devices(
+        MagicMock(),
+        SimpleNamespace(entry_id="entry-id"),
+        "AA:BB:CC:DD:EE:FF",
+    )
+
+    entity_registry.async_update_entity.assert_called_once_with(
+        "sensor.legacy_signal",
+        device_id="canonical",
+    )
+    device_registry.async_remove_device.assert_called_once_with("duplicate")
 
 
 def test_sync_clock_button_presses_device_clock_sync():

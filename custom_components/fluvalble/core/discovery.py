@@ -43,12 +43,9 @@ _FLUVAL_BRAND_NAMES = ("fluval", "aquasky", "plantpro")
 # arbitrary "plant sensor" / "marine radio" devices. Require a Fluval-style
 # suffix (version, Nano, or underscore/hyphen serial).
 _SERIES_NAME_RE = re.compile(
-    r"^(plant\s*pro|plant|marine|reef)"
-    r"(?:"
-    r"\s*nano|"
-    r"\s*(?:pro|[234](?:\.0)?)|"
-    r"[_\-]"
-    r").+",
+    r"^(?:plant\s*pro|plant|marine|reef)"
+    r"(?:\s*nano|\s*(?:pro|[234](?:\.0)?))?"
+    r"[_\-][a-z0-9]{3,}$",
     re.IGNORECASE,
 )
 
@@ -106,7 +103,7 @@ def name_looks_fluval(name: str | None) -> bool:
     lowered = (name or "").strip().lower()
     if not lowered or lowered == "unknown":
         return False
-    if any(token in lowered for token in _FLUVAL_BRAND_NAMES):
+    if any(lowered.startswith(token) for token in _FLUVAL_BRAND_NAMES):
         return True
     # Require Fluval-style series names (Plant 3.0_… / Marine_…), not bare "plant".
     if _SERIES_NAME_RE.match(lowered):
