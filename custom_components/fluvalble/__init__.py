@@ -81,6 +81,7 @@ NATIVE_AUTO_TIME_FIELDS = {"hour", "minute"}
 NATIVE_AUTO_TIME_RAMP_FIELDS = {*NATIVE_AUTO_TIME_FIELDS, "ramp"}
 NATIVE_LEVEL_FIELDS = tuple(f"channel_{index}" for index in range(1, 6))
 LEGACY_ENTITY_UNIQUE_ID_SUFFIXES = ("_diagnostics", "_refresh_diagnostics")
+RETIRED_ENTITY_DOMAINS = frozenset({"number", "switch"})
 
 
 def _validate_schedule_points(points: object) -> list[dict]:
@@ -387,7 +388,10 @@ def _migrate_legacy_registry_entries(hass: HomeAssistant, entry: ConfigEntry, ma
 
     entity_registry = er.async_get(hass)
     for entity in er.async_entries_for_config_entry(entity_registry, entry.entry_id):
-        if str(entity.unique_id).endswith(LEGACY_ENTITY_UNIQUE_ID_SUFFIXES):
+        entity_id = str(getattr(entity, "entity_id", ""))
+        entity_domain = str(getattr(entity, "domain", "") or entity_id.partition(".")[0])
+        unique_id = str(getattr(entity, "unique_id", ""))
+        if entity_domain in RETIRED_ENTITY_DOMAINS or unique_id.endswith(LEGACY_ENTITY_UNIQUE_ID_SUFFIXES):
             _LOGGER.info("Removing retired Fluval entity %s", entity.entity_id)
             entity_registry.async_remove(entity.entity_id)
 

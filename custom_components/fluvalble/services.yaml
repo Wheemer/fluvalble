@@ -13,40 +13,40 @@ set_channels:
       selector:
         text:
     red:
-      name: Red
-      description: Red channel intensity, 0-100%.
+      name: Channel 1 (Red / Rose)
+      description: Channel 1 intensity, 0-100%. AquaSky and Plant Pro use Red; classic Plant/Marine uses Rose.
       selector:
         number:
           min: 0
           max: 100
           unit_of_measurement: "%"
     green:
-      name: Green
-      description: Green channel intensity, 0-100%.
+      name: Channel 2 (Green / Blue)
+      description: Channel 2 intensity, 0-100%. AquaSky uses Green; Plant/Marine and Plant Pro use Blue.
       selector:
         number:
           min: 0
           max: 100
           unit_of_measurement: "%"
     blue:
-      name: Blue
-      description: Blue channel intensity, 0-100%.
+      name: Channel 3 (Blue / Cool White)
+      description: Channel 3 intensity, 0-100%. AquaSky uses Blue; Plant-family profiles use Cool/Cold White.
       selector:
         number:
           min: 0
           max: 100
           unit_of_measurement: "%"
     white:
-      name: White
-      description: White channel intensity, 0-100%.
+      name: Channel 4 (White)
+      description: Channel 4 intensity, 0-100%. AquaSky uses White; Plant profiles use Pure or Warm White.
       selector:
         number:
           min: 0
           max: 100
           unit_of_measurement: "%"
     channel_5:
-      name: Violet
-      description: Violet channel intensity for compatible fixtures, 0-100%.
+      name: Channel 5 (Warm White / Amber)
+      description: Optional channel 5 intensity, 0-100%. Classic Plant/Marine uses Warm White; Plant Pro uses Amber.
       selector:
         number:
           min: 0

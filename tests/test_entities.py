@@ -9,6 +9,7 @@ from homeassistant.components.light import ATTR_BRIGHTNESS
 
 from custom_components.fluvalble import (
     _cleanup_duplicate_devices,
+    _migrate_legacy_registry_entries,
     binary_sensor,
     button,
     diagnostics,
@@ -162,6 +163,50 @@ def test_duplicate_device_registry_entries_are_merged_safely(monkeypatch):
         device_id="canonical",
     )
     device_registry.async_remove_device.assert_called_once_with("duplicate")
+
+
+def test_retired_switch_number_and_diagnostic_entities_are_removed(monkeypatch):
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.helpers import entity_registry as er
+
+    entries = [
+        SimpleNamespace(entity_id="switch.fluval_led", unique_id="AABBCCDDEEFF_led_on_off"),
+        SimpleNamespace(entity_id="number.fluval_red", unique_id="AABBCCDDEEFF_channel_1"),
+        SimpleNamespace(entity_id="sensor.fluval_diagnostics", unique_id="AABBCCDDEEFF_diagnostics"),
+        SimpleNamespace(entity_id="light.fluval_light", unique_id="AABBCCDDEEFF_light"),
+        SimpleNamespace(entity_id="sensor.fluval_signal", unique_id="AABBCCDDEEFF_rssi"),
+    ]
+    entity_registry = SimpleNamespace(async_remove=MagicMock())
+    device_registry = SimpleNamespace(async_update_device=MagicMock())
+    device_entry = SimpleNamespace(id="device-id", serial_number="AA:BB:CC:DD:EE:FF")
+
+    monkeypatch.setattr(er, "async_get", lambda hass: entity_registry, raising=False)
+    monkeypatch.setattr(
+        er,
+        "async_entries_for_config_entry",
+        lambda registry, entry_id: entries,
+        raising=False,
+    )
+    monkeypatch.setattr(dr, "async_get", lambda hass: device_registry, raising=False)
+    monkeypatch.setattr(
+        dr,
+        "async_entries_for_config_entry",
+        lambda registry, entry_id: [device_entry],
+        raising=False,
+    )
+
+    _migrate_legacy_registry_entries(
+        MagicMock(),
+        SimpleNamespace(entry_id="entry-id"),
+        "AA:BB:CC:DD:EE:FF",
+    )
+
+    assert [call.args[0] for call in entity_registry.async_remove.call_args_list] == [
+        "switch.fluval_led",
+        "number.fluval_red",
+        "sensor.fluval_diagnostics",
+    ]
+    device_registry.async_update_device.assert_called_once_with("device-id", serial_number=None)
 
 
 def test_sync_clock_button_presses_device_clock_sync():
