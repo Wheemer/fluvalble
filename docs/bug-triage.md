@@ -4,7 +4,7 @@ See [`issue-coverage.md`](issue-coverage.md) for the full matrix across forks.
 
 | # | Title | Status in this fork |
 |---|-------|---------------------|
-| [#6](https://github.com/MrMooreUK/fluvalble/issues/6) | Aquasky 2.0: commands ignored | Mitigated — write-without-response preferred; needs HW confirm |
+| [#6](https://github.com/MrMooreUK/fluvalble/issues/6) | Aquasky 2.0: commands ignored | Fixed and hardware-validated for product `0x0103` through an ESPHome Bluetooth proxy; other variants still need reports |
 | [#8](https://github.com/MrMooreUK/fluvalble/issues/8) | RTC / schedule after power cut | Mitigated — sync on connect + button; re-sync after disconnect |
 | [#16](https://github.com/MrMooreUK/fluvalble/issues/16) | Options Configure 500 | Fixed |
 | [#17](https://github.com/MrMooreUK/fluvalble/issues/17) | Plant shown as Aquasky | Fixed |

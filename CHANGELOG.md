@@ -5,6 +5,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.1.0] - 2026-08-27
+
+This is the first consolidated stable release from the Wheemer fork. It includes
+the previously documented 0.0.32 and 0.0.33 work, which had not been published as
+GitHub releases.
+
+### Added
+- First-class Home Assistant light control with protocol-aware colour mapping for
+  classic Plant/Marine, AquaSky RGBW, AquaSky 3.0, and Plant Pro / 4.0 profiles.
+- Eleven verified classic FluvalSmart dynamic effect IDs and the four native
+  Plant Pro / 4.0 Sun/Moon scene indices exposed through Home Assistant effects.
+- Home Assistant-managed scheduling plus Plant Pro / 4.0 fixture-native Auto and
+  Professional schedule write/readback support.
+- Clock synchronization, lamp-profile selection, redacted diagnostics, and a
+  Bluetooth **Reachable** diagnostic based on recent advertisements or a live
+  GATT connection.
+- Plant Pro / 4.0 mesh/SPP (`fff0`/`fff1`/`fff2`, `0xD1` + CBOR) control,
+  including five-channel Red/Blue/Cool White/Warm White/Amber handling.
+
+### Changed
+- Home Assistant config entries now use the standard unload/setup lifecycle;
+  options reload without the integration attempting Python module self-reloads.
+- BLE connection handling uses one bounded retry cycle, immediate serialized
+  recovery for unexpected persistent-session drops, and optional permanent
+  connections via `active_time: 0` for low command latency.
+- Discovery is restricted to Fluval-specific names, services, and manufacturer
+  data, while configured lights are deduplicated by Bluetooth identity.
+- Python, CI, pre-commit, branding, and GitHub Actions dependencies are pinned at
+  current releases and monitored by Dependabot; CodeQL and repository security
+  automation are enabled.
+- User, contributor, agent, issue-triage, and release documentation now reflects
+  the light-first entity model, current hardware evidence, and branch-to-`main`
+  release process. Release-readiness checks run for `release/*` PRs.
+
+### Fixed
+- Power-off no longer sends intermediate colour frames or visibly fades through
+  unrelated colours.
+- Corrected classic and Plant Pro effect assignments, classic Blue-family channel
+  counts, AquaSky colour-state restoration, and ESPHome-proxy write behavior.
+- Fixed false Bluetooth detections, duplicate Fluval device-registry rows, stale
+  entity cleanup, options-flow failures, clock-sync retries, and reload teardown.
+- Diagnostics redact Bluetooth addresses, advertised names, manufacturer/service
+  payloads, and registry identifiers.
+
+### Credits
+- Original Fluval BLE integration and upstream project by
+  [@MrMooreUK](https://github.com/MrMooreUK) and prior contributors.
+- Plant Pro / 4.0 protocol behavior was derived from FluvalConnect APK analysis
+  and cross-checked against the hardware-validated MIT-licensed
+  [cryystyy/fluval-plant-pro-4-homeassistant](https://github.com/cryystyy/fluval-plant-pro-4-homeassistant)
+  project.
+- Classic protocol research and supporting work by
+  [@kw217](https://github.com/kw217) and the Fluval community.
+- Hardware validation, Home Assistant refinements, and consolidated release work
+  by [@Wheemer](https://github.com/Wheemer).
+
+---
+
 ## [0.0.33] - 2026-08-27
 
 ### Added

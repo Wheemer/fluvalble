@@ -99,9 +99,9 @@ When Home Assistant detects a Fluval light advertising over BLE, it will show a 
 1. Go to **Settings** → **Devices & services** → **Add integration**.
 2. Search for **Fluval Aquarium LED** (or **Fluval BLE**).
 3. **Select your light** from the dropdown. The list shows only devices that look like Fluval lights (by Bluetooth service or name), so your aquarium light is easy to find. Ensure the light is **on** and in range before adding.
-   - If your light appears: choose it and submit. The integration creates one device with the switch, channels, mode select, and connection sensor.
+   - If your light appears: choose it and submit. The integration creates one device with a primary light entity, mode select, clock-sync button, Reachable status, and diagnostic sensors. Advanced per-channel entities from older releases are cleaned up.
    - If it's not in the list: choose **"My device isn't in the list — enter MAC address manually"**, then enter the MAC (e.g. `AA:BB:CC:DD:EE:FF`). You can find the MAC in your phone's Bluetooth settings or the Fluval app.
-4. After setup, the switch and other entities appear on the device. If you only see the integration card (e.g. "Update" / "Pre-release") and no switch, see [Troubleshooting](#troubleshooting) below.
+4. After setup, the light and supporting entities appear on the device. If you only see the integration card (for example, "Update") and no light entity, see [Troubleshooting](#troubleshooting) below.
 
 No cloud account or app login is needed; the integration talks directly to the light over BLE.
 
@@ -299,20 +299,20 @@ is configured.
 | Issue | What to try |
 |-------|---------------------|
 | **Integration not found** | Restart HA after installation. Ensure the `fluvalble` folder is directly under `custom_components`. |
-| **Only see "Update" / "Pre-release", no switch or entities** | The device wasn't in the Bluetooth cache when the integration loaded. Remove the integration (delete the config entry), ensure the light is **on** and in range, then add the integration again and select your light from the dropdown. Restart HA after updating the integration. |
+| **Only see "Update", no light or device entities** | The device wasn't in the Bluetooth cache when the integration loaded. Remove the integration config entry, ensure the fixture is **on** and in range, then add the integration again and select the light. Restart Home Assistant only when newly installed Python source must be loaded. |
 | **Cannot connect / no entities** | Confirm the light is on and in BLE range. Check that HA has Bluetooth enabled and that the adapter can see other BLE devices. Verify the MAC address (no typos, correct format AA:BB:CC:DD:EE:FF). |
 | **My light isn't in the dropdown** | Ensure the light is on and advertising. Use "My device isn't in the list" and enter the MAC manually (from phone Bluetooth settings or the Fluval app). |
 | **Lamp connected but doesn't respond to actions** | Try the Fluval app first to confirm the light works. If the app works but HA doesn't, open an issue with your model and HA logs. |
-| **Switch doesn't turn light on/off** | Ensure the light model uses the same BLE command set. Try toggling once from the Fluval app, then again from HA. Restart HA and retry. |
-| **Entities show "unavailable"** | The light may be out of range, off, or the BLE connection dropped. Move the light or HA adapter closer; check the connection binary sensor and RSSI. |
+| **Light entity doesn't turn the fixture on/off** | Confirm the configured lamp profile and that the official app can control the fixture. Close the app so it releases BLE, then reload the Fluval BLE config entry and retry. Plant Pro / 4.0 permits only one Bluetooth central. |
+| **Entities show "unavailable"** | The light may be out of range, off, or the BLE connection dropped. Move the light or HA adapter closer; check Reachable and RSSI. |
 | **Wrong model or channel count** | Open **Configure** on the integration and set **Lamp type** (Plant 5ch / Plant Pro 4.0 / AquaSky 2.0 / AquaSky 3.0). Plant names are detected from the BLE advertisement; FACEBD/mesh and status packets refine channel count. |
 | **Schedule wrong after power cut** | Use the **Sync clock** button (also runs automatically on connect). Keep Manual mode if you drive schedules from Home Assistant. |
 | **Channels or mode don't update** | Some features (e.g. mode change) may require the device to send state back; if the firmware doesn't report mode, the dropdown may not reflect external changes. |
-| **Channel sliders don't change the light** | See [Channel sliders troubleshooting](#channel-sliders-dont-change-the-light) below. |
+| **Colour or brightness changes don't reach the fixture** | See [Colour and brightness troubleshooting](#colour-and-brightness-troubleshooting) below. |
 
-### Channel sliders don't change the light
+### Colour and brightness troubleshooting
 
-If the switch and mode work but brightness sliders have no effect:
+If power or mode works but colour and brightness changes have no effect:
 
 1. **Enable debug logging** to see what's being sent. Add to `configuration.yaml`:
    ```yaml
@@ -321,22 +321,24 @@ If the switch and mode work but brightness sliders have no effect:
      logs:
        custom_components.fluvalble: debug
    ```
-   Restart HA, move a slider, then check **Settings → System → Logs** (or the full log file). Look for lines like:
+   Restart Home Assistant after changing `configuration.yaml`, change the light
+   colour or brightness, then check **Settings → System → Logs** (or the full log
+   file). Look for lines like:
    ```text
-   Sending to XX:XX:XX:XX:XX:XX — raw: 68 04 03 e8 00 00 00 00 ... | encrypted: 54 ...
+   Writing Fluval packet to XX:XX:XX:XX:XX:XX response=False chunk=1/1 raw=6804... encrypted=54...
    ```
    - `raw` = command before encryption (e.g. `68 04` = brightness command, then channel bytes as 16-bit big-endian values)
    - `encrypted` = what goes over BLE
 
 2. **Verify the Fluval app works** — If the app can change brightness, the hardware is fine; the protocol may differ for your model.
 
-3. **Confirm you're in Manual mode** — The integration automatically switches to Manual when you adjust a slider, but if that switch command is dropped (e.g. connection is unstable), the brightness command will be ignored by the device. Switch to Manual via the select entity first, then adjust sliders.
+3. **Confirm you're in Manual mode** — The integration automatically switches to Manual when you change colour or brightness, but if that mode command is dropped (for example, because the connection is unstable), the fixture may ignore the following command. Select Manual first, then retry from the light entity.
 
-4. **Check your model** — Different Fluval models (Plant 3.0, Reef 3.0, Aquasky 2.0, etc.) may use slightly different command formats. Open an issue with your model name and a log snippet showing the `raw` and `encrypted` bytes when you move a slider.
+4. **Check your model** — Different Fluval models (Plant 3.0, Reef 3.0, AquaSky 2.0, etc.) use different command formats. Open an issue with your model name and a log snippet showing the `raw` and `encrypted` bytes for the failed light command.
 
 5. **Packet capture (advanced)** — Use an ESP32 or nRF Sniffer to capture BLE traffic while changing brightness in the Fluval app, then compare with what this integration sends.
 
-If you have a different Fluval BLE model and the switch or other controls don't behave as expected, open an issue with your model name and (if possible) a note on what works in the official app.
+If you have a different Fluval BLE model and the light or other controls don't behave as expected, open an issue with your model name and (if possible) a note on what works in the official app.
 
 ---
 

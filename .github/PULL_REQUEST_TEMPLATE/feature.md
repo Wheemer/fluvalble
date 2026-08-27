@@ -15,7 +15,7 @@
 - [ ] Tested with Home Assistant version: <!-- e.g. 2024.6.0 -->
 
 ## Checklist
-- [ ] Targets **`dev`** (not `master`)
+- [ ] Targets **`main`** from a focused feature/fix/docs branch
 - [ ] `manifest.json` version bumped if behaviour changes
 - [ ] `CHANGELOG.md` updated
 - [ ] Translation strings added/updated if new UI text was added
