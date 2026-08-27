@@ -35,6 +35,9 @@ GitHub releases.
 - Python, CI, pre-commit, branding, and GitHub Actions dependencies are pinned at
   current releases and monitored by Dependabot; CodeQL and repository security
   automation are enabled.
+- User, contributor, agent, issue-triage, and release documentation now reflects
+  the light-first entity model, current hardware evidence, and branch-to-`main`
+  release process. Release-readiness checks run for `release/*` PRs.
 
 ### Fixed
 - Power-off no longer sends intermediate colour frames or visibly fades through

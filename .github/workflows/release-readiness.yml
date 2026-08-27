@@ -1,8 +1,8 @@
-name: Dev → Master promotion check
+name: Release readiness
 
-# Extra validation that only runs when dev is being merged into master/main.
-# Checks that the manifest version is a clean semver and that a CHANGELOG
-# entry exists for it, so a release can be created immediately after merge.
+# Extra validation for release branches targeting the stable branch. Checks that
+# the manifest version is clean semver and has a CHANGELOG entry, then runs the
+# full suite so the merge commit can be tagged immediately.
 
 on:
   pull_request:
@@ -15,7 +15,7 @@ jobs:
   promotion-checks:
     name: Promotion readiness
     runs-on: ubuntu-latest
-    if: github.head_ref == 'dev'
+    if: startsWith(github.head_ref, 'release/')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -39,7 +39,7 @@ jobs:
           changelog = open("CHANGELOG.md").read()
           if f"[{version}]" not in changelog:
               print(f"::error::No CHANGELOG.md entry found for version {version}", file=sys.stderr)
-              print("::error::Add a section '## [{version}] — YYYY-MM-DD' before merging.", file=sys.stderr)
+              print(f"::error::Add a section '## [{version}] - YYYY-MM-DD' before merging.", file=sys.stderr)
               sys.exit(1)
           print(f"CHANGELOG entry found for {version}")
           EOF

@@ -2,12 +2,12 @@ name: CI
 
 on:
   push:
-    # CI runs on the stable branch, the dev integration branch, and all
-    # feature / review branches so problems are caught before merging.
-    branches: [master, main, dev, "claude/**", "feature/**", "fix/**"]
+    # CI runs on stable and active work branches so problems are caught before
+    # merging. Pull requests targeting stable are always covered below.
+    branches: [master, main, "feature/**", "fix/**", "build/**", "docs/**", "chore/**", "release/**"]
   pull_request:
     # All PRs must pass CI regardless of their target branch.
-    branches: [master, main, dev]
+    branches: [master, main]
 
 permissions:
   contents: read
@@ -200,34 +200,3 @@ jobs:
         uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main
         with:
           category: integration
-
-  # -----------------------------------------------------------------------
-  # Branch guard — prevent direct PRs to master/main
-  # All changes must flow through dev first.
-  # -----------------------------------------------------------------------
-  branch-guard:
-    name: Branch guard (PR targets dev, not master)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - name: Enforce dev-first workflow
-        run: |
-          TARGET="${{ github.base_ref }}"
-          SOURCE="${{ github.head_ref }}"
-          echo "PR: $SOURCE → $TARGET"
-
-          # If a dev branch exists, require feature/fix PRs to target it first.
-          # Repositories that only have main/master can merge directly there.
-          if git ls-remote --exit-code --heads origin dev >/dev/null 2>&1; then
-            if [[ "$TARGET" == "master" || "$TARGET" == "main" ]]; then
-              if [[ "$SOURCE" == "dev" ]]; then
-                echo "Release promotion PR (dev → $TARGET) — allowed."
-                exit 0
-              fi
-              echo "::error::Direct PRs to $TARGET are not allowed while a dev branch exists."
-              echo "::error::Please target 'dev' instead. Only 'dev → master/main' PRs are permitted."
-              exit 1
-            fi
-          fi
-
-          echo "PR targets '$TARGET' — OK."

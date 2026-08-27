@@ -6,13 +6,12 @@ before sending a large change so we can agree on direction first.
 
 ## Branch workflow
 
-This repository uses a `dev` → `main` promotion model:
+This repository uses short-lived branches merged into `main`:
 
-- `main` is the released code. Direct pushes and direct PRs are blocked
-  by CI (the `branch-guard` job).
-- `dev` is the integration branch. Open your PR against `dev`.
+- `main` is the released code. Do not push directly to it; open a PR from a
+  focused branch and merge only after the required checks pass.
 - Feature/fix branches follow the `feature/<slug>` or `fix/<slug>`
-  convention; AI-driven branches follow `claude/<slug>`.
+  convention. Use `release/vX.Y.Z` for release preparation.
 
 ## Local development
 
@@ -70,13 +69,13 @@ Before opening a new issue, please check the open issues and the
 
 Releases are tag-driven. The maintainer:
 
-1. Adds an `[Unreleased]` entry to `CHANGELOG.md` covering the work
-   landing in the next release.
+1. Adds a dated `## [X.Y.Z]` entry to `CHANGELOG.md` covering the release.
 2. Bumps `version` in `custom_components/fluvalble/manifest.json`.
-3. Merges `dev` → `main` via PR.
-4. Tags the merge commit: `git tag v0.0.X && git push --tags`.
+3. Opens and merges a `release/vX.Y.Z` PR into `main` after CI passes.
+4. Tags that exact merge commit: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 5. The `release.yml` workflow builds the release assets and publishes
-   a GitHub release.
+   a GitHub release. Verify the release, zip asset, and manifest version before
+   announcing it.
 
 ## License
 
