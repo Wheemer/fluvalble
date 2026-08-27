@@ -359,7 +359,7 @@ Home Assistant config-entry reloads unload entities, cancel callbacks/tasks, clo
 
 - Original integration and upstream project by [@MrMooreUK](https://github.com/MrMooreUK) and contributors, building on earlier Fluval BLE work including [@mrzottel](https://github.com/mrzottel).
 - Plant Pro / 4.0 transport, command and native-schedule behavior was independently integrated from FluvalConnect APK evidence and cross-checked against the hardware-validated MIT-licensed [cryystyy/fluval-plant-pro-4-homeassistant](https://github.com/cryystyy/fluval-plant-pro-4-homeassistant) project.
-- Historical FluvalSmart Android and controller-firmware repositories by `kw217` were used as protocol documentation only; their source code was not copied because those repositories do not state a software license.
+- Historical FluvalSmart Android and controller-firmware repositories by [@kw217](https://github.com/kw217) were used as protocol documentation only; their source code was not copied because those repositories do not state a software license.
 - Community reverse‑engineering of the Fluval BLE protocol, including Planted Tank Forum and ESPHome/fluval projects.
 - Hardware testing and Home Assistant-focused refinements by [@Wheemer](https://github.com/Wheemer).
 - Licensed under the **Apache License 2.0**. See [LICENSE](LICENSE) in this repo.
