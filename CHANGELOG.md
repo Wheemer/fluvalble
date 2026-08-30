@@ -5,6 +5,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [0.1.2] - 2026-08-30
+
+### Fixed
+- Kept classic Fluval manufacturer data as discovery evidence without treating
+  it as proof of the newer FACEBD protocol, preventing incorrect initial
+  protocol and channel-profile selection.
+- Restored canonical lowercase GATT UUIDs and defensive case-insensitive
+  characteristic lookup for ESPHome 2026.x / esp-idf 5.x Bluetooth proxies.
+- Normalized live Bluetooth addresses, entity unique IDs, and device-registry
+  identifiers to uppercase so mixed-case proxy reports cannot duplicate or
+  orphan Fluval entities.
+- Completed classic discovery corroboration by combining the Fluval/Hagen
+  manufacturer ID with a valid APK-format product payload.
+
+---
+
 ## [0.1.1] - 2026-08-27
 
 ### Fixed

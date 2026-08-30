@@ -58,6 +58,17 @@ def test_create_entities_for_platforms():
     assert len(light.create_entities(device)) == 1
 
 
+def test_entity_unique_id_and_device_identifiers_use_uppercase_mac():
+    device = _make_device()
+    device.address = "aa:bb:cc:dd:ee:ff"
+
+    entity = sensor.FluvalSensor(device, "rssi")
+
+    assert entity._attr_unique_id == "AABBCCDDEEFF_rssi"
+    assert entity._attr_device_info["identifiers"] == {(DOMAIN, "AA:BB:CC:DD:EE:FF")}
+    assert ("bluetooth", "AA:BB:CC:DD:EE:FF") in entity._attr_device_info["connections"]
+
+
 def test_select_internal_update_and_select_option():
     asyncio.run(_async_test_select_internal_update_and_select_option())
 

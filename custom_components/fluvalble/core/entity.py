@@ -18,9 +18,12 @@ class FluvalEntity(Entity):
         self.device = device
         self.attr = attr
 
+        # Registry identifiers are case-sensitive. Bluetooth proxies can
+        # report mixed-case addresses, so keep one canonical uppercase form.
+        mac = device.mac.upper()
         self._attr_device_info = DeviceInfo(
-            connections={(CONNECTION_BLUETOOTH, device.mac)},
-            identifiers={(DOMAIN, device.mac)},
+            connections={(CONNECTION_BLUETOOTH, mac)},
+            identifiers={(DOMAIN, mac)},
             manufacturer="Fluval",
             model=device.model_name,
             name=device.name or "Fluval",
@@ -31,7 +34,7 @@ class FluvalEntity(Entity):
             self._attr_translation_key = None
         else:
             self._attr_translation_key = attr
-        self._attr_unique_id = device.mac.replace(":", "") + "_" + attr
+        self._attr_unique_id = mac.replace(":", "") + "_" + attr
 
         # Store the bound method so deregistration uses the exact same object.
         self._update_handler = self.internal_update

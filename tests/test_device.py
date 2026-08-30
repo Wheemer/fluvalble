@@ -64,6 +64,44 @@ def test_aquasky_2_exposes_four_color_channels():
     assert device.light_mode() == "rgbw"
 
 
+def test_classic_manufacturer_data_is_not_facebd_protocol_evidence():
+    device = _make_device(
+        name="AquaSky2.0_Test",
+        model="AquaSky 2.0 Bluetooth LED",
+        service_uuids=["00001000-0000-1000-8000-00805f9b34fb"],
+        manufacturer_data={"12592": "3438303130330000000000000000000000000000"},
+    )
+
+    assert device.product_id == 0x0103
+    assert device.facebd is False
+    assert device.numbers() == AQUASKY_NUMBERS
+
+
+def test_facebd_service_uuid_selects_facebd_protocol():
+    device = _make_device(
+        service_uuids=["facebd00-7261-6262-6974-696f74626c65"],
+        manufacturer_data={},
+    )
+
+    assert device.facebd is True
+
+
+def test_update_ble_keeps_mac_uppercase():
+    device = _make_device()
+    ble_device = MagicMock(address="aa:bb:cc:dd:ee:ff", name="AquaSky2.0_Test")
+    advertisement = MagicMock(
+        rssi=-60,
+        service_uuids=["00001000-0000-1000-8000-00805f9b34fb"],
+        service_data={},
+        manufacturer_data={12592: bytes.fromhex("3438303130330000000000000000000000000000")},
+    )
+
+    device.update_ble(ble_device, advertisement)
+
+    assert device.address == "AA:BB:CC:DD:EE:FF"
+    assert device.conn_info["mac"] == "AA:BB:CC:DD:EE:FF"
+
+
 def test_aquasky_3_name_exposes_five_channels():
     device = _make_device(name="AquaSky3.0_2F3176", model="AquaSky 3.0 Bluetooth LED")
 

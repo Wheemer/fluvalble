@@ -28,7 +28,6 @@ from . import (
 from .client import Client
 from .discovery import (
     CONF_MODEL,
-    FLUVAL_MANUFACTURER_IDS,
     detect_model,
     name_looks_fluval,
 )
@@ -261,8 +260,8 @@ class Device:
 
     def update_ble(self, device: BLEDevice, advertisement: AdvertisementData):
         """Update BLE metadata from an advertisement."""
-        self.address = device.address
-        self.conn_info["mac"] = device.address
+        self.address = device.address.upper()
+        self.conn_info["mac"] = self.address
         self.touch_seen(rssi=advertisement.rssi, notify=False)
         self.conn_info["service_uuids"] = list(advertisement.service_uuids)
         self.conn_info["service_data"] = {key: bytes(value).hex() for key, value in advertisement.service_data.items()}
@@ -1626,8 +1625,8 @@ class Device:
 
     def _update_from_ble_device(self, device: BLEDevice) -> None:
         """Populate metadata from a directly resolved BLEDevice."""
-        self.address = device.address
-        self.conn_info["mac"] = device.address
+        self.address = device.address.upper()
+        self.conn_info["mac"] = self.address
         self.conn_info["last_seen"] = datetime.now(UTC)
 
         details = device.details if isinstance(device.details, dict) else {}
@@ -1681,15 +1680,18 @@ class Device:
         service_data: dict,
         manufacturer_data: dict,
     ) -> bool:
-        """Return true when advertisements match the newer FACEBD controllers."""
+        """Return true only when advertisements expose the FACEBD protocol.
+
+        Fluval manufacturer data is shared by classic and FACEBD controllers,
+        so it is vendor evidence for discovery but never protocol evidence.
+        """
         if any(uuid.lower().startswith("facebd") for uuid in service_uuids):
             return True
 
         if any(str(uuid).lower().startswith("facebd") for uuid in service_data):
             return True
 
-        manufacturer_ids = {int(key) for key in manufacturer_data}
-        return bool(FLUVAL_MANUFACTURER_IDS.intersection(manufacturer_ids))
+        return False
 
     def decode_update_packet(self, data: bytearray):
         """Decode the received Fluval packet and sort into values."""
