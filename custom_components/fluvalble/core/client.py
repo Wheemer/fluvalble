@@ -34,53 +34,53 @@ POST_WRITE_STATE_DELAY = 0.25
 # Preferring facebd02/facebd01 first for commands sends correct CBOR packets to
 # the wrong characteristic, so the light never reacts.
 WIFI_COMMAND_WRITE_UUIDS = (
-    "FACEBD80-7261-6262-6974-696F74626C65",
-    "FACEBD80-0000-1000-8000-00805F9B34FB",
+    "facebd80-7261-6262-6974-696f74626c65",
+    "facebd80-0000-1000-8000-00805f9b34fb",
 )
 BLE_COMMAND_WRITE_UUIDS = (
-    "FACEBD01-7261-6262-6974-696F74626C65",
-    "FACEBD01-0000-1000-8000-00805F9B34FB",
-    "FACEBD02-7261-6262-6974-696F74626C65",
-    "FACEBD02-0000-1000-8000-00805F9B34FB",
-    "00001001-0000-1000-8000-00805F9B34FB",
-    "0000FFF2-0000-1000-8000-00805F9B34FB",
+    "facebd01-7261-6262-6974-696f74626c65",
+    "facebd01-0000-1000-8000-00805f9b34fb",
+    "facebd02-7261-6262-6974-696f74626c65",
+    "facebd02-0000-1000-8000-00805f9b34fb",
+    "00001001-0000-1000-8000-00805f9b34fb",
+    "0000fff2-0000-1000-8000-00805f9b34fb",
 )
-MESH_COMMAND_WRITE_UUIDS = ("0000FFF2-0000-1000-8000-00805F9B34FB",)
-CLASSIC_COMMAND_WRITE_UUIDS = ("00001001-0000-1000-8000-00805F9B34FB",)
+MESH_COMMAND_WRITE_UUIDS = ("0000fff2-0000-1000-8000-00805f9b34fb",)
+CLASSIC_COMMAND_WRITE_UUIDS = ("00001001-0000-1000-8000-00805f9b34fb",)
 # facebd02 is intentionally excluded: it is the BLE read/notify char, not the
 # WiFi CBOR write target used by on/off/mode/channel packets.
 COMMAND_WRITE_UUIDS = WIFI_COMMAND_WRITE_UUIDS + BLE_COMMAND_WRITE_UUIDS
 NOTIFY_UUIDS = (
-    "FACEBD80-7261-6262-6974-696F74626C65",
-    "FACEBD80-0000-1000-8000-00805F9B34FB",
-    "FACEBD02-7261-6262-6974-696F74626C65",
-    "FACEBD02-0000-1000-8000-00805F9B34FB",
-    "FACEBD03-7261-6262-6974-696F74626C65",
-    "FACEBD03-0000-1000-8000-00805F9B34FB",
-    "00001002-0000-1000-8000-00805F9B34FB",
-    "0000FFF1-0000-1000-8000-00805F9B34FB",
+    "facebd80-7261-6262-6974-696f74626c65",
+    "facebd80-0000-1000-8000-00805f9b34fb",
+    "facebd02-7261-6262-6974-696f74626c65",
+    "facebd02-0000-1000-8000-00805f9b34fb",
+    "facebd03-7261-6262-6974-696f74626c65",
+    "facebd03-0000-1000-8000-00805f9b34fb",
+    "00001002-0000-1000-8000-00805f9b34fb",
+    "0000fff1-0000-1000-8000-00805f9b34fb",
 )
-MESH_NOTIFY_UUIDS = ("0000FFF1-0000-1000-8000-00805F9B34FB",)
-CLASSIC_NOTIFY_UUIDS = ("00001002-0000-1000-8000-00805F9B34FB",)
+MESH_NOTIFY_UUIDS = ("0000fff1-0000-1000-8000-00805f9b34fb",)
+CLASSIC_NOTIFY_UUIDS = ("00001002-0000-1000-8000-00805f9b34fb",)
 INIT_WRITE_UUIDS = (
-    "FACEBD01-7261-6262-6974-696F74626C65",
-    "FACEBD01-0000-1000-8000-00805F9B34FB",
-    "00001001-0000-1000-8000-00805F9B34FB",
+    "facebd01-7261-6262-6974-696f74626c65",
+    "facebd01-0000-1000-8000-00805f9b34fb",
+    "00001001-0000-1000-8000-00805f9b34fb",
 )
 # FluvalConnect BleKxtKt.setNotificationToOldBle requests MTU 220.
 CLASSIC_MTU = 220
 # Present on some classic 00001000 stacks. FluvalConnect old-light UI never
 # writes these (no readReg / 0x0F / 0x47). Kept only for diagnostics.
-CLASSIC_WRITE_REG_UUIDS = ("00001005-0000-1000-8000-00805F9B34FB",)
-CLASSIC_READ_REG_UUIDS = ("00001004-0000-1000-8000-00805F9B34FB",)
+CLASSIC_WRITE_REG_UUIDS = ("00001005-0000-1000-8000-00805f9b34fb",)
+CLASSIC_READ_REG_UUIDS = ("00001004-0000-1000-8000-00805f9b34fb",)
 WAKE_READ_UUIDS = (
-    "FACEBD81-7261-6262-6974-696F74626C65",
-    "FACEBD81-0000-1000-8000-00805F9B34FB",
-    "FACEBD80-7261-6262-6974-696F74626C65",
-    "FACEBD80-0000-1000-8000-00805F9B34FB",
-    "FACEBD02-7261-6262-6974-696F74626C65",
-    "FACEBD02-0000-1000-8000-00805F9B34FB",
-    "0000FFF6-0000-1000-8000-00805F9B34FB",
+    "facebd81-7261-6262-6974-696f74626c65",
+    "facebd81-0000-1000-8000-00805f9b34fb",
+    "facebd80-7261-6262-6974-696f74626c65",
+    "facebd80-0000-1000-8000-00805f9b34fb",
+    "facebd02-7261-6262-6974-696f74626c65",
+    "facebd02-0000-1000-8000-00805f9b34fb",
+    "0000fff6-0000-1000-8000-00805f9b34fb",
 )
 WRITE_PROPERTIES = frozenset({"write", "write-without-response"})
 
@@ -159,10 +159,23 @@ class Client:
         """Return a characteristic if present, without raising on missing UUIDs."""
         if self.client is None:
             return None
+        target = str(uuid).lower()
         try:
-            return self.client.services.get_characteristic(uuid)
+            characteristic = self.client.services.get_characteristic(target)
         except BleakError:
+            characteristic = None
+        if characteristic is not None:
+            return characteristic
+
+        # Be defensive around adapters that preserve non-canonical UUID case.
+        try:
+            for service in self.client.services:
+                for characteristic in getattr(service, "characteristics", ()):
+                    if str(characteristic.uuid).lower() == target:
+                        return characteristic
+        except (AttributeError, TypeError, BleakError):
             return None
+        return None
 
     def _find_characteristic(
         self,

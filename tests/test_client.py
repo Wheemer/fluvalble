@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.fluvalble.core.client import Client
 from custom_components.fluvalble.core import encryption, protocol
+from custom_components.fluvalble.core import client as client_module
+from custom_components.fluvalble.core.client import Client
 
 
 class _FakeTask:
@@ -53,6 +54,39 @@ def _manual_status_frame(*, channels: list[int], channel_count: int = 5) -> byte
 def test_client_does_not_eager_connect_on_init():
     client = _make_client()
     assert client.connect_task is None
+
+
+def test_characteristic_uuid_constants_are_lowercase():
+    """ESPHome/esp-idf proxies require canonical lowercase UUID strings."""
+    uuid_groups = (
+        client_module.WIFI_COMMAND_WRITE_UUIDS,
+        client_module.BLE_COMMAND_WRITE_UUIDS,
+        client_module.MESH_COMMAND_WRITE_UUIDS,
+        client_module.CLASSIC_COMMAND_WRITE_UUIDS,
+        client_module.NOTIFY_UUIDS,
+        client_module.MESH_NOTIFY_UUIDS,
+        client_module.CLASSIC_NOTIFY_UUIDS,
+        client_module.INIT_WRITE_UUIDS,
+        client_module.CLASSIC_WRITE_REG_UUIDS,
+        client_module.CLASSIC_READ_REG_UUIDS,
+        client_module.WAKE_READ_UUIDS,
+    )
+
+    assert all(uuid == uuid.lower() for group in uuid_groups for uuid in group)
+
+
+def test_get_characteristic_matches_case_insensitively():
+    client = _make_client()
+    stored_uuid = "00001001-0000-1000-8000-00805f9b34fb"
+    characteristic = SimpleNamespace(uuid=stored_uuid, properties=["write"])
+    services = MagicMock()
+    services.get_characteristic.side_effect = lambda uuid: characteristic if uuid == stored_uuid else None
+    client.client = SimpleNamespace(services=services)
+
+    found = client._get_characteristic("00001001-0000-1000-8000-00805F9B34FB")
+
+    assert found is characteristic
+    services.get_characteristic.assert_called_once_with(stored_uuid)
 
 
 def test_client_honors_configured_wire_dialect():

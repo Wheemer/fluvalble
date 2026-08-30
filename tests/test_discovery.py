@@ -8,6 +8,7 @@ from custom_components.fluvalble.core.discovery import (
     CONF_SERVICE_UUIDS,
     detect_model,
     discovery_metadata,
+    has_fluval_manufacturer_data,
     is_likely_fluval,
 )
 
@@ -71,6 +72,16 @@ def test_classic_fluval_manufacturer_payload_is_likely_fluval():
     )
 
     assert is_likely_fluval(None, adv)
+
+
+def test_fluval_manufacturer_id_without_valid_product_payload_is_not_enough():
+    adv = _advertisement(
+        service_uuids=["00001000-0000-1000-8000-00805f9b34fb"],
+        manufacturer_data={12592: b"invalid"},
+    )
+
+    assert has_fluval_manufacturer_data(adv)
+    assert not is_likely_fluval(None, adv)
 
 
 def test_veepeak_obd2_is_not_fluval_even_with_classic_uuid():
