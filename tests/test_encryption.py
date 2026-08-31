@@ -1,15 +1,18 @@
 """
 Unit tests for the Fluval BLE encryption module.
 
-Matches FluvalConnect libhy_api EncodeUtil.encodeMessage / decodeMessage.
+The encryption module is pure Python with no external deps so it is imported
+directly from its file path to avoid loading the full HA package hierarchy.
 """
 
 import os
 import sys
 
+# conftest.py registers all stubs (bleak, homeassistant) before this file
+# is imported — so custom_components can be loaded through sys.path.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from custom_components.fluvalble.core import encryption, protocol
+from custom_components.fluvalble.core import encryption
 
 
 class TestAddCrc:
@@ -21,11 +24,13 @@ class TestAddCrc:
     def test_single_byte(self):
         data = bytearray([0x68])
         result = encryption.add_crc(data)
+        # CRC = XOR of all bytes = 0x68
         assert result[-1] == 0x68
 
     def test_two_bytes(self):
         data = bytearray([0x68, 0x05])
         result = encryption.add_crc(data)
+        # CRC = 0x68 ^ 0x05 = 0x6D
         assert result[-1] == 0x6D
 
     def test_crc_appended_in_place(self):
@@ -33,70 +38,74 @@ class TestAddCrc:
         original_len = len(data)
         result = encryption.add_crc(data)
         assert len(result) == original_len + 1
-        assert result is data
+        assert result is data  # mutates in place and returns same object
 
 
-class TestEncodeMessageApk:
-    def test_libhy_api_header_layout(self):
+class TestEncrypt:
+    def test_structure(self):
+        """Encrypted packet must have IV + length + key prefix then payload."""
         payload = bytearray([0x68, 0x05, 0x6D])
-        result = encryption.encode_message(payload, key=0x0E)
-        assert result[0] == 0x54
-        assert result[1] == (len(payload) + 1) ^ 0x54
-        assert result[2] == 0x54 ^ 0x0E
-        assert list(result[3:]) == [b ^ 0x0E for b in payload]
+        result = encryption.encrypt(payload)
+        assert result[0] == 0x54  # IV
+        assert result[2] == 0x54  # key (rand=0 → key=IV)
+        assert len(result) == 3 + len(payload)
 
-    def test_round_trip_random_and_fixed(self):
-        original = bytearray([0x68, 0x04, 0x00, 0x64, 0x00, 0x64, 0x0C])
-        for key in (0, 0x0E, 0xAB, None):
-            encrypted = encryption.encode_message(original, key=key)
-            assert list(encryption.decode_message(encrypted)) == list(original)
+    def test_length_field(self):
+        payload = bytearray([0xAA, 0xBB])
+        result = encryption.encrypt(payload)
+        # length byte = (len(payload) + 1) XOR 0x54
+        expected_length_byte = (len(payload) + 1) ^ 0x54
+        assert result[1] == expected_length_byte
 
-    def test_chunks_at_fifteen_bytes(self):
-        # 17-byte plaintext → two encodeMessage frames (APK LightDetailActivity)
-        payload = bytes(range(17))
-        frames = encryption.encode_message_chunks(payload, key=0x11)
-        assert len(frames) == 2
-        assert len(frames[0]) == 18  # 15 + 3 header
-        assert len(frames[1]) == 5  # 2 + 3 header
-        assert encryption.decode_message(frames[0]) == payload[:15]
-        assert encryption.decode_message(frames[1]) == payload[15:]
+    def test_payload_unchanged_with_rand_zero(self):
+        """With rand=0 the payload should pass through unchanged."""
+        payload = bytearray([0x11, 0x22, 0x33])
+        result = encryption.encrypt(payload)
+        assert list(result[3:]) == list(payload)
 
 
-class TestDialectCompat:
-    def test_encrypt_wrappers(self):
-        payload = bytearray([0x68, 0x03, 0x01, 0x6A])
-        xor_wire = encryption.encrypt(payload, encryption.DIALECT_XOR_0E)
-        rand0_wire = encryption.encrypt(payload, encryption.DIALECT_RAND0)
-        assert xor_wire[2] == 0x5A
-        assert rand0_wire[2] == 0x54
-        assert list(encryption.decrypt(xor_wire)) == list(payload)
+class TestDecrypt:
+    def test_round_trip(self):
+        """encrypt → decrypt should return the original payload."""
+        original = bytearray([0x68, 0x04, 0x00, 0x64, 0x00, 0x64])
+        encrypted = encryption.encrypt(original)
+        decrypted = encryption.decrypt(encrypted)
+        assert list(decrypted) == list(original)
+
+    def test_short_packet(self):
+        """Decrypt a minimal 3-byte packet (no payload) returns empty bytes."""
+        packet = bytearray([0x54, 0x01 ^ 0x54, 0x54])
+        result = encryption.decrypt(packet)
+        assert result == bytearray()
+
+    def test_malformed_packets_shorter_than_header_are_ignored(self):
+        """Short/corrupt notifications should not crash callback handling."""
+        assert encryption.decrypt(bytearray()) == bytearray()
+        assert encryption.decrypt(bytearray([0x54])) == bytearray()
+        assert encryption.decrypt(bytearray([0x54, 0x55])) == bytearray()
+
+    def test_key_derivation(self):
+        """Key = source[0] XOR source[2]; payload bytes XOR that key."""
+        # Construct a packet manually: IV=0x10, key_byte=0x30, payload=[0x40]
+        # XOR key = 0x10 ^ 0x30 = 0x20; decrypted byte = 0x40 ^ 0x20 = 0x60
+        packet = bytearray([0x10, 0xFF, 0x30, 0x40])
+        result = encryption.decrypt(packet)
+        assert result[0] == 0x60
 
 
-class TestEncryptedOldPacket:
-    def test_does_not_double_crc(self):
-        raw = protocol.old_switch_packet(True)
-        assert raw == bytes((0x68, 0x03, 0x01, 0x6A))
-        wire = protocol.encrypted_old_packet(raw, encryption.DIALECT_XOR_0E)
-        assert bytes(encryption.decrypt(wire)) == raw
+class TestAddCrcAndEncryptIntegration:
+    def test_command_mode_manual(self):
+        """CMD_MODE = manual (0x68, 0x02, 0x00) should survive add_crc + encrypt + decrypt."""
+        cmd = bytearray([0x68, 0x02, 0x00])
+        with_crc = encryption.add_crc(bytearray(cmd))  # copy so we can compare
+        encrypted = encryption.encrypt(with_crc)
+        decrypted = encryption.decrypt(encrypted)
+        assert list(decrypted) == list(with_crc)
 
-    def test_channel_packet_is_single_chunk(self):
-        # 5 channels: 2 + 10 + 1 CRC = 13 <= 15
-        raw = protocol.old_all_zone_packet([10, 20, 30, 40, 50])
-        frames = protocol.encrypted_old_frames(raw, encryption.DIALECT_XOR_0E)
-        assert len(frames) == 1
-        assert bytes(encryption.decrypt(frames[0])) == raw
-
-
-class TestChannelEndianDecode:
-    def test_prefers_le_status_like_apk(self):
-        # APK analyticLightParameterToOld: lo | (hi << 8)
-        payload = bytearray(15)
-        payload[0] = 0x68
-        payload[5] = 100 & 0xFF
-        payload[6] = 100 >> 8
-        payload[7] = 200 & 0xFF
-        payload[8] = 200 >> 8
-        words, endian = protocol.decode_channel_words(bytes(payload), 2)
-        assert endian == "le"
-        assert words[0] == 100
-        assert words[1] == 200
+    def test_command_switch_on(self):
+        """CMD_SWITCH on (0x68, 0x03, 0x01) round trip."""
+        cmd = bytearray([0x68, 0x03, 0x01])
+        with_crc = encryption.add_crc(bytearray(cmd))
+        encrypted = encryption.encrypt(with_crc)
+        decrypted = encryption.decrypt(encrypted)
+        assert list(decrypted) == list(with_crc)

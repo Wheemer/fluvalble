@@ -8,7 +8,10 @@ from typing import Any
 
 from . import encryption
 
-# FACEBD / WiFi-over-BLE CBOR keys (FluvalConnect)
+MAX_CBOR_CONTAINER_ITEMS = 64
+MAX_CBOR_BYTE_STRING_LENGTH = 4096
+MAX_CBOR_NESTING_DEPTH = 8
+
 WIFI_TZ_OFFSET_KEY = 101
 WIFI_CLOCK_MS_KEY = 102
 WIFI_MODE_KEY = 103
@@ -26,23 +29,23 @@ WIFI_PRO_TIMES_KEY = 121
 WIFI_PRO_LEVELS_KEY = 122
 WIFI_SCHEDULED_EFFECT_KEY = 123
 
-# Mesh BLE (service 0000fff0) CBOR keys — FluvalConnect
-MESH_MODE_KEY = 1
-MESH_SWITCH_KEY = 2
-MESH_MANUAL_KEY = 14
-MESH_CHANNEL_KEYS = (3, 4, 5, 6, 7)
-MESH_OPCODE_READ = 0xD0
-MESH_OPCODE_SET = 0xD1
-MESH_OPCODE_STATUS = 0xD2
-MESH_OPCODE_CLOCK = 0xCD
-MESH_WEATHER_KEY = 14
-MESH_AUTO_SUNRISE_KEY = 8
-MESH_AUTO_SUNSET_KEY = 9
-MESH_AUTO_SLEEP_KEY = 10
-MESH_AUTO_DAY_LEVELS_KEY = 11
-MESH_AUTO_NIGHT_LEVELS_KEY = 12
-MESH_PRO_SCHEDULE_KEY = 13
-MESH_PRO_SCHEDULE_MAX_POINTS = 12
+SPP_COMMAND_HEADER = 0xD1
+SPP_STATUS_HEADER = 0xD2
+SPP_READ_PARAMS_PACKET = bytes((0xD0, 0xFF))
+SPP_MODE_KEY = 1
+SPP_SWITCH_KEY = 2
+SPP_CHANNEL_KEYS = (3, 4, 5, 6, 7)
+SPP_AUTO_SUNRISE_KEY = 8
+SPP_AUTO_SUNSET_KEY = 9
+SPP_AUTO_SLEEP_KEY = 10
+SPP_AUTO_DAY_LEVELS_KEY = 11
+SPP_AUTO_NIGHT_LEVELS_KEY = 12
+SPP_PRO_SCHEDULE_KEY = 13
+SPP_EFFECT_KEY = 14
+SPP_MANUAL_KEY = SPP_EFFECT_KEY
+SPP_EFFECT_SCHEDULE_KEY = 15
+SPP_MAX_PRO_POINTS = 20
+SPP_MAX_EFFECT_WINDOWS = 7
 
 OLD_READ_PARAMS = bytes((0x68, 0x05))
 OLD_MODE = 0x02
@@ -55,6 +58,9 @@ OLD_AUTO_PREVIEW_STOP = 0x0C
 OLD_CLOCK = 0x0E
 OLD_PRO_SCHEDULE = 0x10
 OLD_SCHEDULED_EFFECT = 0x11
+
+# Mesh / Plant Pro clock opcode recovered from FluvalConnect.
+MESH_OPCODE_CLOCK = 0xCD
 
 
 def wifi_switch_packet(is_on: bool) -> bytes:
@@ -87,6 +93,11 @@ def wifi_timezone_packet(now: datetime | None = None) -> bytes:
     offset = moment.utcoffset()
     minutes = int(offset.total_seconds() // 60) if offset is not None else 0
     return cbor_map({WIFI_TZ_OFFSET_KEY: minutes})
+
+
+def mesh_clock_packet(now: datetime | None = None) -> bytes:
+    """Build mesh/Plant Pro clock sync (0xCD + Y M D W h m s)."""
+    return bytes((MESH_OPCODE_CLOCK,)) + _clock_payload(now)
 
 
 def wifi_auto_schedule_packet(
@@ -180,33 +191,31 @@ def decode_wifi_pro_schedule(data: Mapping[int, Any], *, channel_count: int = 4)
     return points
 
 
-def mesh_switch_packet(is_on: bool) -> bytes:
-    """Build mesh on/off packet (0xD1 + CBOR)."""
-    return mesh_set_packet({MESH_SWITCH_KEY: is_on})
+def spp_switch_packet(is_on: bool) -> bytes:
+    """Build a Plant Pro 4.0 SPP power packet."""
+    return spp_command({SPP_SWITCH_KEY: is_on})
 
 
-def mesh_mode_packet(mode: int) -> bytes:
-    """Build mesh mode packet (0xD1 + CBOR)."""
-    return mesh_set_packet({MESH_MODE_KEY: mode})
+def spp_mode_packet(mode: int) -> bytes:
+    """Build a Plant Pro 4.0 SPP mode packet."""
+    return spp_command({SPP_MODE_KEY: mode})
 
 
-def mesh_all_zone_packet(values: Iterable[int]) -> bytes:
-    """Build mesh multi-channel packet (0xD1 + CBOR)."""
-    packet: dict[int, bool | int] = {
-        key: _clamp_percent(value) for key, value in zip(MESH_CHANNEL_KEYS, values, strict=False)
-    }
-    packet[MESH_MANUAL_KEY] = 0
-    return mesh_set_packet(packet)
+def spp_all_zone_packet(values: Iterable[int]) -> bytes:
+    """Build a Plant Pro 4.0 SPP five-channel packet."""
+    packet = {key: _clamp_percent(value) for key, value in zip(SPP_CHANNEL_KEYS, values, strict=False)}
+    packet[SPP_MANUAL_KEY] = 0
+    return spp_command(packet)
 
 
-def mesh_weather_effect_packet(effect_id: int) -> bytes:
-    """Build Plant Pro / mesh weather-effect packet (0xD1 + {14: id})."""
-    if effect_id not in (1, 2, 3, 4):
-        raise ValueError("Plant Pro mesh weather effect ID must be 1, 2, 3, or 4")
-    return mesh_set_packet({MESH_WEATHER_KEY: effect_id})
+def spp_effect_packet(effect_id: int) -> bytes:
+    """Build a Plant Pro native-effect packet recovered from FluvalConnect."""
+    if not 0 <= effect_id <= 4:
+        raise ValueError("Plant Pro effect ID must be between 0 and 4")
+    return spp_command({SPP_EFFECT_KEY: effect_id})
 
 
-def mesh_auto_schedule_packet(
+def spp_auto_schedule_packet(
     *,
     sunrise: tuple[int, int, int],
     sunset: tuple[int, int, int],
@@ -214,92 +223,62 @@ def mesh_auto_schedule_packet(
     day_levels: Iterable[int],
     night_levels: Iterable[int],
 ) -> bytes:
-    """Build Plant Pro native Auto schedule packet.
-
-    Keys/shape match FluvalConnect createLightAutoExportValue for the mesh
-    branch: 8 sunrise h/m/ramp, 9 sunset-end h/m/ramp, 10 sleep h/m or FF/FF,
-    11 day levels, 12 night levels.
-    """
-    sleep_bytes = bytes((0xFF, 0xFF)) if sleep is None else _time_bytes(sleep[0], sleep[1])
-    return mesh_set_packet(
+    """Build the Plant Pro Auto schedule stored in CBOR keys 8-12."""
+    sunrise_data = bytes(_validate_time_with_ramp(sunrise, "sunrise"))
+    sunset_data = bytes(_validate_time_with_ramp(sunset, "sunset"))
+    sleep_data = bytes((0xFF, 0xFF) if sleep is None else _validate_time(sleep, "sleep"))
+    day_data = bytes(_validate_levels(day_levels, "day_levels"))
+    night_data = bytes(_validate_levels(night_levels, "night_levels"))
+    return spp_command(
         {
-            MESH_AUTO_SUNRISE_KEY: _time_ramp_bytes(*sunrise),
-            MESH_AUTO_SUNSET_KEY: _time_ramp_bytes(*sunset),
-            MESH_AUTO_SLEEP_KEY: sleep_bytes,
-            MESH_AUTO_DAY_LEVELS_KEY: _level_bytes(day_levels),
-            MESH_AUTO_NIGHT_LEVELS_KEY: _level_bytes(night_levels),
+            SPP_AUTO_SUNRISE_KEY: sunrise_data,
+            SPP_AUTO_SUNSET_KEY: sunset_data,
+            SPP_AUTO_SLEEP_KEY: sleep_data,
+            SPP_AUTO_DAY_LEVELS_KEY: day_data,
+            SPP_AUTO_NIGHT_LEVELS_KEY: night_data,
         }
     )
 
 
-def mesh_pro_schedule_packet(points: Iterable[dict[str, Any]]) -> bytes:
-    """Build Plant Pro native Pro schedule packet from normalized points."""
-    blob = bytearray()
-    encoded_points: list[tuple[int, int, list[int]]] = []
-    for point in points:
-        minute = int(point.get("minute", 0)) % (24 * 60)
-        levels = [_clamp_percent(int(point.get(f"channel_{index}", 0))) for index in range(1, 6)]
-        encoded_points.append((minute // 60, minute % 60, levels))
-
-    if len(encoded_points) > MESH_PRO_SCHEDULE_MAX_POINTS:
-        raise ValueError(f"Plant Pro Pro schedule supports at most {MESH_PRO_SCHEDULE_MAX_POINTS} points")
-
-    blob.append(len(encoded_points))
-    for hour, minute, levels in encoded_points:
+def spp_pro_schedule_packet(points: Iterable[dict[str, Any]]) -> bytes:
+    """Build the Plant Pro Pro-mode multi-point schedule in CBOR key 13."""
+    normalized = list(points)
+    if not 1 <= len(normalized) <= SPP_MAX_PRO_POINTS:
+        raise ValueError(f"Plant Pro schedule requires 1-{SPP_MAX_PRO_POINTS} points")
+    blob = bytearray((len(normalized),))
+    for point in normalized:
+        hour, minute = _validate_time((point["hour"], point["minute"]), "point")
+        levels = _validate_levels(point["levels"], "point levels")
         blob.extend((hour, minute, *levels))
-    return mesh_set_packet({MESH_PRO_SCHEDULE_KEY: bytes(blob)})
+    return spp_command({SPP_PRO_SCHEDULE_KEY: bytes(blob)})
 
 
-def mesh_read_params_packet() -> bytes:
-    """Build mesh status read request."""
-    return bytes((MESH_OPCODE_READ, 0xFF))
+def spp_effect_schedule_packet(windows: Iterable[dict[str, Any]]) -> bytes:
+    """Build seven fixed Plant Pro timed-effect slots in CBOR key 15."""
+    normalized = list(windows)
+    if len(normalized) > SPP_MAX_EFFECT_WINDOWS:
+        raise ValueError(f"Plant Pro supports at most {SPP_MAX_EFFECT_WINDOWS} effect windows")
+    blob = bytearray(SPP_MAX_EFFECT_WINDOWS * 6)
+    for index, window in enumerate(normalized):
+        start_h, start_m = _validate_time((window["start_hour"], window["start_minute"]), "start")
+        end_h, end_m = _validate_time((window["end_hour"], window["end_minute"]), "end")
+        effect_id = int(window["effect_id"])
+        if not 1 <= effect_id <= 4:
+            raise ValueError("Plant Pro effect window ID must be between 1 and 4")
+        weekdays = list(window.get("weekdays", []))
+        if len(weekdays) != 7 or any(not isinstance(value, bool) for value in weekdays):
+            raise ValueError("Plant Pro effect weekdays must contain seven booleans")
+        flags = sum((1 << day) for day, enabled in enumerate(weekdays) if enabled)
+        if bool(window.get("enabled", True)):
+            flags |= 0x80
+        offset = index * 6
+        blob[offset : offset + 6] = bytes((flags, start_h, start_m, end_h, end_m, effect_id))
+    return spp_command({SPP_EFFECT_SCHEDULE_KEY: bytes(blob)})
 
 
-def decode_mesh_auto_schedule(data: dict[int, Any]) -> dict[str, Any] | None:
-    """Decode the hardware-verified Plant Pro Auto schedule fields."""
-    sunrise = _decode_time_ramp(data.get(MESH_AUTO_SUNRISE_KEY))
-    sunset = _decode_time_ramp(data.get(MESH_AUTO_SUNSET_KEY))
-    sleep = _decode_sleep_time(data.get(MESH_AUTO_SLEEP_KEY))
-    day_levels = _decode_levels(data.get(MESH_AUTO_DAY_LEVELS_KEY))
-    night_levels = _decode_levels(data.get(MESH_AUTO_NIGHT_LEVELS_KEY))
-    if all(value is None for value in (sunrise, sunset, sleep, day_levels, night_levels)):
-        return None
-    return {
-        "sunrise": sunrise,
-        "sunset": sunset,
-        "sleep": sleep,
-        "day_levels": day_levels,
-        "night_levels": night_levels,
-    }
-
-
-def decode_mesh_pro_schedule(value: Any) -> list[dict[str, Any]] | None:
-    """Decode a Plant Pro key-13 point blob into normalized schedule points."""
-    if not isinstance(value, bytes) or not value:
-        return None
-    count = value[0]
-    if count > MESH_PRO_SCHEDULE_MAX_POINTS or len(value) != 1 + count * 7:
-        return None
-    points: list[dict[str, Any]] = []
-    for index in range(count):
-        offset = 1 + index * 7
-        hour, minute, *levels = value[offset : offset + 7]
-        if hour > 23 or minute > 59 or any(level > 100 for level in levels):
-            return None
-        point: dict[str, Any] = {"minute": hour * 60 + minute}
-        point.update({f"channel_{channel}": level for channel, level in enumerate(levels, start=1)})
-        points.append(point)
-    return points
-
-
-def mesh_clock_packet(now: datetime | None = None) -> bytes:
-    """Build mesh clock sync (opcode 0xCD + Y M D W h m s)."""
-    return bytes((MESH_OPCODE_CLOCK,)) + _clock_payload(now)
-
-
-def mesh_set_packet(values: Mapping[int, bool | bytes | int]) -> bytes:
-    """Wrap a CBOR map with the mesh set opcode."""
-    return bytes((MESH_OPCODE_SET,)) + cbor_map(values)
+def spp_command(values: dict[int, bool | bytes | int]) -> bytes:
+    """Build an unencrypted Plant Pro 4.0 SPP command frame."""
+    return bytes((SPP_COMMAND_HEADER,)) + cbor_map(values)
 
 
 def old_read_params_packet() -> bytes:
@@ -310,13 +289,6 @@ def old_read_params_packet() -> bytes:
 def old_switch_packet(is_on: bool) -> bytes:
     """Build the old BLE on/off packet."""
     return old_packet(bytes((0x68, OLD_SWITCH, 0x01 if is_on else 0x00)))
-
-
-def old_weather_effect_packet(effect_id: int) -> bytes:
-    """Build the APK's classic live weather-effect packet (680A + ID)."""
-    if not 1 <= effect_id <= 11:
-        raise ValueError("Classic Fluval effect ID must be between 1 and 11")
-    return old_packet(bytes((0x68, OLD_WEATHER_EFFECT, effect_id)))
 
 
 def old_auto_schedule_packet(
@@ -429,24 +401,20 @@ def old_mode_packet(mode: int) -> bytes:
     return old_packet(bytes((0x68, OLD_MODE, mode & 0xFF)))
 
 
-def old_all_zone_packet(values: Iterable[int], *, endian: str = "be") -> bytes:
-    """Build old BLE all-channel packet (``6804`` + progress*10 + XOR CRC).
-
-    FluvalConnect ``OldLightKxtKt.createLightAllZoneValueForOld`` appends each
-    channel via ``HexUtil.integerToHexLittle(progress * 10)``. Despite the name,
-    that helper zero-pads to 4 hex digits and does **not** swap bytes — wire
-    words are big-endian (e.g. 100 → ``0064``). Status notifications parse the
-    same scale little-endian; do not use LE for outbound commands.
-    """
+def old_all_zone_packet(values: Iterable[int]) -> bytes:
+    """Build the old BLE all-channel packet."""
     packet = bytearray((0x68, OLD_ALL_ZONE))
     for value in values:
         scaled = _clamp_percent(value) * 10
-        if endian == "le":
-            # Kept only for tests / accidental legacy callers — never for writes.
-            packet.extend((scaled & 0xFF, (scaled >> 8) & 0xFF))
-        else:
-            packet.extend(((scaled >> 8) & 0xFF, scaled & 0xFF))
+        packet.extend((scaled & 0xFF, scaled >> 8))
     return old_packet(packet)
+
+
+def old_weather_effect_packet(effect_id: int) -> bytes:
+    """Build the APK-native classic weather-effect packet."""
+    if not 1 <= effect_id <= 11:
+        raise ValueError("Classic Fluval effect ID must be between 1 and 11")
+    return old_packet(bytes((0x68, OLD_WEATHER_EFFECT, effect_id)))
 
 
 def old_clock_packet(now: datetime | None = None) -> bytes:
@@ -454,7 +422,7 @@ def old_clock_packet(now: datetime | None = None) -> bytes:
     return old_packet(bytes((0x68, OLD_CLOCK)) + _clock_payload(now))
 
 
-def old_packet(packet: bytes | bytearray) -> bytes:
+def old_packet(packet: bytes) -> bytes:
     """Append the XOR checksum used by the old light protocol."""
     checksum = 0
     for item in packet:
@@ -462,240 +430,9 @@ def old_packet(packet: bytes | bytearray) -> bytes:
     return bytes(packet) + bytes((checksum,))
 
 
-def encrypted_old_packet(packet: bytes, dialect: str | None = None) -> bytearray:
-    """Encrypt one checksummed plaintext frame (single chunk).
-
-    Prefer ``encrypted_old_frames`` for writes — the APK chunks at 15 bytes.
-    ``dialect`` is legacy; omitted means APK ``encodeMessage`` (random key).
-    """
-    frames = encrypted_old_frames(packet, dialect=dialect)
-    return frames[0]
-
-
-def encrypted_old_frames(packet: bytes, dialect: str | None = None) -> list[bytearray]:
-    """Classic old-light write path: CRC'd plaintext → ≤15-byte chunks → encode.
-
-    Default dialect is the APK's random embedded key. ``rand0`` and ``xor_0e``
-    remain explicit compatibility options. ``old_*_packet`` already has XOR CRC.
-    """
-    if dialect == encryption.DIALECT_XOR_0E:
-        return encryption.encode_message_chunks(packet, key=0x0E)
-    if dialect == encryption.DIALECT_RAND0:
-        return encryption.encode_message_chunks(packet, key=0)
-    # Default / APK FluvalConnect: random key per chunk (encodeMessage).
-    return encryption.encode_message_chunks(packet, key=None)
-
-
-def decode_channel_words(payload: bytes, count: int) -> tuple[list[int], str]:
-    """Decode ``count`` 16-bit channel words from a classic status frame.
-
-    FluvalConnect ``LightKxtKt.analyticLightParameterToOld`` (manual mode)
-    builds each color short as little-endian:
-    ``lo | (hi << 8)`` at offsets after mode/switch/dyn. Prefer LE when both
-    endiannesses score; fall back to BE only if LE is out of 0–1000.
-    """
-    words_le: list[int] = []
-    words_be: list[int] = []
-    # Status layout after 6805 strip varies; Device passes already-sliced
-    # payloads. Offset 5 matches [0]=0x68 [1]=cmd [2]=mode [3]=switch [4]=dyn.
-    offset = 5
-    for index in range(count):
-        lo = offset + index * 2
-        hi = lo + 1
-        if hi >= len(payload):
-            break
-        words_le.append((payload[hi] << 8) | payload[lo])
-        words_be.append((payload[lo] << 8) | payload[hi])
-
-    def _score(values: list[int]) -> int:
-        if not values:
-            return -1
-        if any(value < 0 or value > 1000 for value in values):
-            return -1
-        return len(values)
-
-    score_le = _score(words_le)
-    score_be = _score(words_be)
-    if score_le >= 0:
-        return words_le, "le"
-    if score_be >= 0:
-        return words_be, "be"
-    return words_le, "le"
-
-
-# Fluval company ID in manufacturer data (ScanOldLight / Ble ads).
-FLUVAL_MFG_COMPANY_ID = 12592  # 0x3140
-
-# LightDeviceUtils.getLightType → 3 (RGBW / 4-channel), including LIGHT_ID_385_OLD.
-_OLD_LIGHT_TYPE_3_IDS = frozenset(
-    {
-        # Live controller B8:80:4F:3D:67:C0 advertises ASCII product 0103.
-        # It rejects five-channel 6804 packets and physically accepts the
-        # four-channel RGBW form, so preserve this device-derived override
-        # even though 259 is absent from the current APK's static ID table.
-        259,
-        532,
-        321,
-        322,
-        323,
-        324,
-        325,
-        326,
-        327,
-        328,
-        329,
-        336,
-        384,
-        609,
-        369,
-        370,
-        371,
-        372,
-        # Historical Fluval controller firmware identifies the Blue family
-        # (0x0161-0x0164) as four-channel rather than the five-channel default.
-        353,
-        354,
-        355,
-        356,
-        564,
-        29057,  # LIGHT_ID_385_OLD
-    }
-)
-
-# LightDeviceUtils.getLightType → 2 (plant pink/blue/CW/PW/WW), including LIGHT_ID_386_OLD.
-_OLD_LIGHT_TYPE_2_IDS = frozenset(
-    {
-        386,
-        545,
-        548,
-        305,
-        306,
-        307,
-        308,
-        309,
-        310,
-        311,
-        387,
-        388,
-        338,
-        537,
-        641,
-        373,
-        374,
-        375,
-        376,
-        377,
-        563,
-        29058,  # LIGHT_ID_386_OLD
-    }
-)
-
-
-def product_id_from_manufacturer_data(manufacturer_data: dict[Any, Any]) -> int | None:
-    """APK ``ScanOldLightActivity`` productId from Fluval manufacturer payload.
-
-    Full scan uses ``scanRecord[9:13]`` as ASCII hex (``0181``→``7181``,
-    ``0182``→``7182``), then ``Integer.parseInt(hex, 16)``.
-
-    With the common ``02 01 06`` + mfg AD layout, that slice is bytes ``[2:6]``
-    of the company-12592 payload (after the 2-byte company ID in the AD).
-    """
-    for key, value in manufacturer_data.items():
-        try:
-            company = int(key)
-        except (TypeError, ValueError):
-            continue
-        if company != FLUVAL_MFG_COMPANY_ID:
-            continue
-        if isinstance(value, str):
-            try:
-                raw = bytes.fromhex(value)
-            except ValueError:
-                continue
-        else:
-            raw = bytes(value)
-        if len(raw) < 6:
-            continue
-        try:
-            hex_str = raw[2:6].decode("ascii")
-        except UnicodeDecodeError:
-            continue
-        if hex_str == "0181":
-            hex_str = "7181"
-        elif hex_str == "0182":
-            hex_str = "7182"
-        if len(hex_str) != 4 or any(c not in "0123456789abcdefABCDEF" for c in hex_str):
-            continue
-        return int(hex_str, 16)
-    return None
-
-
-def light_type_from_product_id(product_id: int) -> int:
-    """APK ``LightDeviceUtils.getLightType`` (1 marine / 2 plant / 3 RGBW)."""
-    if product_id in _OLD_LIGHT_TYPE_3_IDS:
-        return 3
-    if product_id in _OLD_LIGHT_TYPE_2_IDS:
-        return 2
-    # Type-1 list + default unknown → marine 5-channel.
-    return 1
-
-
-def channel_count_for_product_id(product_id: int | None) -> int | None:
-    """APK ``getChannelCount``: 4 when type 3, else 5."""
-    if product_id is None:
-        return None
-    return 4 if light_type_from_product_id(product_id) == 3 else 5
-
-
-def old_receive_frame_ready(payload: bytes, *, channel_count: int | None = None) -> bool:
-    """True when APK ``analyticLightParameterToOld`` would accept the cache.
-
-    ``LightDetailActivity.onCharacteristicChanged`` accumulates decrypted bytes
-    and only acts when parse returns non-null. Incomplete multi-notify status
-    must not be delivered to HA.
-    """
-    if not encryption.is_valid_fluval_frame(payload):
-        return False
-    if len(payload) < 4:
-        return False
-    # Non-6805 classic frames (acks): deliver when XOR frame is complete.
-    if payload[1] != OLD_READ_PARAMS[1]:
-        return True
-
-    body = payload[2:-1]
-    if not body:
-        return False
-    mode = body[0]
-    counts = [channel_count] if channel_count in (4, 5) else [5, 4]
-    for count in counts:
-        if count is None:
-            continue
-        if mode == 0:
-            # Manual: (channels * 6) + 3  (open + dyn + colors + P1–P4)
-            if len(body) == count * 6 + 3:
-                return True
-        elif mode == 1:
-            # Auto: several accepted lengths in analyticLightParameterToOld.
-            base = count * 2 + 9
-            if len(body) in (base, count * 2 + 12, count * 2 + 15, count * 2 + 18):
-                return True
-        elif mode == 2:
-            # Pro: length depends on point count at body[1].
-            if len(body) < 2:
-                continue
-            points = body[1]
-            stride = count + 2
-            expected = points * stride + 2
-            if len(body) in (expected, expected + 6):
-                return True
-    return False
-
-
-def strip_mesh_opcode(data: bytes) -> bytes:
-    """Remove a leading mesh opcode byte when present."""
-    if data and data[0] in (MESH_OPCODE_SET, MESH_OPCODE_STATUS, MESH_OPCODE_READ, 0xFF):
-        return data[1:]
-    return data
+def encrypted_old_packet(packet: bytes) -> bytearray:
+    """Wrap an old protocol packet in the original integration encryption."""
+    return encryption.encrypt(encryption.add_crc(bytearray(packet)))
 
 
 def cbor_map(values: Mapping[int, Any]) -> bytes:
@@ -710,27 +447,107 @@ def cbor_map(values: Mapping[int, Any]) -> bytes:
     return bytes(packet)
 
 
+def decode_spp_auto_schedule(data: dict[int, Any]) -> dict[str, Any] | None:
+    """Decode Plant Pro Auto schedule keys 8-12 from a D2 state map."""
+    sunrise = data.get(SPP_AUTO_SUNRISE_KEY)
+    sunset = data.get(SPP_AUTO_SUNSET_KEY)
+    sleep = data.get(SPP_AUTO_SLEEP_KEY)
+    day_levels = data.get(SPP_AUTO_DAY_LEVELS_KEY)
+    night_levels = data.get(SPP_AUTO_NIGHT_LEVELS_KEY)
+    if not (
+        isinstance(sunrise, bytes)
+        and len(sunrise) >= 3
+        and isinstance(sunset, bytes)
+        and len(sunset) >= 3
+        and isinstance(sleep, bytes)
+        and len(sleep) >= 2
+        and isinstance(day_levels, bytes)
+        and len(day_levels) >= 5
+        and isinstance(night_levels, bytes)
+        and len(night_levels) >= 5
+    ):
+        return None
+    return {
+        "sunrise": f"{sunrise[0]:02d}:{sunrise[1]:02d}",
+        "sunrise_ramp": sunrise[2],
+        "sunset": f"{sunset[0]:02d}:{sunset[1]:02d}",
+        "sunset_ramp": sunset[2],
+        "sleep": None if sleep[0] == 0xFF else f"{sleep[0]:02d}:{sleep[1]:02d}",
+        "day_levels": list(day_levels[:5]),
+        "night_levels": list(night_levels[:5]),
+    }
+
+
+def decode_spp_pro_schedule(data: dict[int, Any]) -> list[dict[str, Any]] | None:
+    """Decode the Plant Pro key-13 Pro schedule."""
+    blob = data.get(SPP_PRO_SCHEDULE_KEY)
+    if not isinstance(blob, bytes) or not blob:
+        return None
+    count = blob[0]
+    if count > SPP_MAX_PRO_POINTS or len(blob) < 1 + (count * 7):
+        return None
+    return [
+        {
+            "time": f"{blob[1 + index * 7]:02d}:{blob[2 + index * 7]:02d}",
+            "levels": list(blob[3 + index * 7 : 8 + index * 7]),
+        }
+        for index in range(count)
+    ]
+
+
+def decode_spp_effect_schedule(data: dict[int, Any]) -> list[dict[str, Any]] | None:
+    """Decode the Plant Pro key-15 seven-slot timed-effect schedule."""
+    blob = data.get(SPP_EFFECT_SCHEDULE_KEY)
+    if not isinstance(blob, bytes) or len(blob) < SPP_MAX_EFFECT_WINDOWS * 6:
+        return None
+    windows = []
+    for index in range(SPP_MAX_EFFECT_WINDOWS):
+        offset = index * 6
+        flags, start_h, start_m, end_h, end_m, effect_id = blob[offset : offset + 6]
+        if not any((flags, start_h, start_m, end_h, end_m, effect_id)):
+            continue
+        windows.append(
+            {
+                "enabled": bool(flags & 0x80),
+                "weekdays": [bool(flags & (1 << day)) for day in range(7)],
+                "start": f"{start_h:02d}:{start_m:02d}",
+                "end": f"{end_h:02d}:{end_m:02d}",
+                "effect_id": effect_id,
+            }
+        )
+    return windows
+
+
 def decode_cbor_map(data: bytes) -> dict[Any, Any] | None:
-    """Decode the CBOR maps the FACEBD/mesh controllers use for light state."""
+    """Decode the CBOR maps the FACEBD controllers use for light state."""
     if not data or data[0] >> 5 != 5:
         return None
 
-    value, _offset = _read_cbor_value(data, 0)
+    try:
+        value, offset = _read_cbor_value(data, 0)
+    except (UnicodeError, ValueError):
+        return None
     if not isinstance(value, dict):
+        return None
+    if offset != len(data):
         return None
     return value
 
 
 def decode_cbor_update(data: bytes) -> dict[Any, Any] | None:
-    """Decode a FACEBD/mesh state packet, accepting optional mesh opcode prefix."""
-    return decode_cbor_map(strip_mesh_opcode(data))
+    """Decode a raw CBOR map or a Plant Pro D1/D2 CBOR frame."""
+    if not data:
+        return None
+    if data[0] in (SPP_COMMAND_HEADER, SPP_STATUS_HEADER):
+        return decode_cbor_map(data[1:])
+    return decode_cbor_map(data)
 
 
 def _clock_payload(now: datetime | None = None) -> bytes:
     """Return Y M D W h m s used by old and mesh clock sync."""
     moment = (now or datetime.now().astimezone()).astimezone()
-    # FluvalConnect TimeUtil.getWeeks: Monday = 1 ... Sunday = 7.
-    weekday = moment.isoweekday()
+    # Fluval week: Sunday = 0
+    weekday = (moment.weekday() + 1) % 7
     return bytes(
         (
             moment.year % 100,
@@ -752,8 +569,26 @@ def _time_bytes(hour: int, minute: int) -> bytes:
     return bytes((max(0, min(23, int(hour))), max(0, min(59, int(minute)))))
 
 
-def _time_ramp_bytes(hour: int, minute: int, ramp_minutes: int) -> bytes:
-    return _time_bytes(hour, minute) + bytes((max(0, min(240, int(ramp_minutes))),))
+def _validate_time(value: tuple[int, int], label: str) -> tuple[int, int]:
+    hour, minute = (int(item) for item in value)
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ValueError(f"Plant Pro {label} time is outside the 24-hour range")
+    return hour, minute
+
+
+def _validate_time_with_ramp(value: tuple[int, int, int], label: str) -> tuple[int, int, int]:
+    hour, minute = _validate_time((value[0], value[1]), label)
+    ramp = int(value[2])
+    if not 0 <= ramp <= 240:
+        raise ValueError(f"Plant Pro {label} ramp must be between 0 and 240 minutes")
+    return hour, minute, ramp
+
+
+def _validate_levels(values: Iterable[int], label: str) -> list[int]:
+    levels = [int(value) for value in values]
+    if len(levels) != 5 or any(not 0 <= value <= 100 for value in levels):
+        raise ValueError(f"Plant Pro {label} must contain five values from 0 to 100")
+    return levels
 
 
 def _clamp_ramp(value: int) -> int:
@@ -883,7 +718,9 @@ def _cbor_major(major: int, value: int) -> bytes:
     return bytes(((major << 5) | 27, *value.to_bytes(8, "big")))
 
 
-def _read_cbor_value(data: bytes, offset: int) -> tuple[Any, int]:
+def _read_cbor_value(data: bytes, offset: int, depth: int = 0) -> tuple[Any, int]:
+    if depth > MAX_CBOR_NESTING_DEPTH:
+        raise ValueError("CBOR nesting is too deep")
     if offset >= len(data):
         raise ValueError("Unexpected end of CBOR data")
 
@@ -902,6 +739,8 @@ def _read_cbor_value(data: bytes, offset: int) -> tuple[Any, int]:
         return -1 - value, offset
     if major in (2, 3):
         length, offset = _read_cbor_length(data, offset)
+        if length > MAX_CBOR_BYTE_STRING_LENGTH:
+            raise ValueError("CBOR byte/text string is too large")
         end = offset + length
         if end > len(data):
             raise ValueError("CBOR byte/text string is truncated")
@@ -911,17 +750,23 @@ def _read_cbor_value(data: bytes, offset: int) -> tuple[Any, int]:
         return raw.decode("utf-8", errors="replace"), end
     if major == 4:
         length, offset = _read_cbor_length(data, offset)
+        if length > MAX_CBOR_CONTAINER_ITEMS:
+            raise ValueError("CBOR array has too many items")
         items = []
         for _ in range(length):
-            value, offset = _read_cbor_value(data, offset)
+            value, offset = _read_cbor_value(data, offset, depth + 1)
             items.append(value)
         return items, offset
     if major == 5:
         length, offset = _read_cbor_length(data, offset)
+        if length > MAX_CBOR_CONTAINER_ITEMS:
+            raise ValueError("CBOR map has too many items")
         result = {}
         for _ in range(length):
-            key, offset = _read_cbor_value(data, offset)
-            value, offset = _read_cbor_value(data, offset)
+            key, offset = _read_cbor_value(data, offset, depth + 1)
+            value, offset = _read_cbor_value(data, offset, depth + 1)
+            if not isinstance(key, (bool, bytes, int, str, type(None))):
+                raise ValueError("CBOR map key is not hashable")
             result[key] = value
         return result, offset
     if major == 7:

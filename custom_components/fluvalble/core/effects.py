@@ -1,15 +1,13 @@
-"""APK-native Fluval classic light effects."""
+"""APK-native effects supported by classic Fluval controllers."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
-# Home Assistant exposes this as the user-selectable way to leave a native
-# effect and return to a normal static channel mix.
 EFFECT_NONE = "None"
 
-# FluvalConnect weather icons map to these classic 0x680A effect IDs.
-# The APK presents them in a different order: 9,10,11,5,6,7,8,1,2,3,4.
+# FluvalConnect maps these names to classic command 0x0A effect IDs. The APK
+# presents its icons in the order 9, 10, 11, 5, 6, 7, 8, 1, 2, 3, 4.
 WEATHER_EFFECTS: Mapping[str, int] = {
     "Thunderstorm": 1,
     "Lightning": 2,
@@ -24,34 +22,37 @@ WEATHER_EFFECTS: Mapping[str, int] = {
     "Crescent moon": 11,
 }
 
-# FluvalConnect's Plant Pro / mesh picker exposes the asset/command indices
-# ``[4, 3, 1, 2]``. The APK resources identify those numbered assets as Sun,
-# Crescent Moon, Full Moon, and Half Moon. Reusing the classic 0x680A names for
-# these IDs made static sun/moon scenes appear as broken lightning/color-cycle
-# effects even though the transmitted mesh IDs were correct.
-MESH_WEATHER_EFFECTS: Mapping[str, int] = {
-    "Sun": 4,
-    "Crescent moon": 3,
-    "Full moon": 1,
-    "Half moon": 2,
+# FluvalConnect exposes this four-effect subset on Plant Pro / mesh controllers
+# through CBOR key 14. The app orders the IDs as 4, 3, 1, 2 in its picker,
+# while the stable Home Assistant order below follows the effect IDs.
+PLANT_PRO_EFFECTS: Mapping[str, int] = {
+    "Thunderstorm": 1,
+    "Lightning": 2,
+    "Sun and lightning": 3,
+    "Colour cycle": 4,
 }
 
 
 def effect_list() -> list[str]:
-    """Return the HA effect list for classic Fluval weather effects."""
+    """Return the classic effects in their stable Home Assistant order."""
     return [EFFECT_NONE, *WEATHER_EFFECTS]
 
 
-def mesh_effect_list() -> list[str]:
-    """Return the HA effect list for Plant Pro / mesh weather effects."""
-    return [EFFECT_NONE, *MESH_WEATHER_EFFECTS]
-
-
 def effect_id(effect: str) -> int | None:
-    """Return the classic 0x680A effect id for a Home Assistant effect name."""
+    """Return the classic effect ID for a Home Assistant effect name."""
     return WEATHER_EFFECTS.get(effect)
 
 
-def mesh_effect_id(effect: str) -> int | None:
-    """Return the Plant Pro / mesh key-14 weather effect id."""
-    return MESH_WEATHER_EFFECTS.get(effect)
+def plant_pro_effect_list() -> list[str]:
+    """Return the Plant Pro effects in stable Home Assistant order."""
+    return [EFFECT_NONE, *PLANT_PRO_EFFECTS]
+
+
+def plant_pro_effect_id(effect: str) -> int | None:
+    """Return the Plant Pro CBOR effect ID for a Home Assistant name."""
+    return PLANT_PRO_EFFECTS.get(effect)
+
+
+def plant_pro_effect_name(effect_id: int) -> str | None:
+    """Return the Home Assistant name for a Plant Pro CBOR effect ID."""
+    return next((name for name, value in PLANT_PRO_EFFECTS.items() if value == effect_id), None)

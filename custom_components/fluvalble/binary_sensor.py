@@ -3,7 +3,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory
+from homeassistant.const import EntityCategory, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -18,14 +18,14 @@ def create_entities(device: Device) -> list:
     return [FluvalSensor(device, "connection")]
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up Fluval binary sensors from a config entry."""
-    del hass
-    add_entities(create_entities(config_entry.runtime_data.device))
+async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_entities: AddEntitiesCallback):
+    runtime = config_entry.runtime_data
+    device = runtime.device
+
+    if device:
+        add_entities(create_entities(device))
+    else:
+        runtime.pending_add_entities[Platform.BINARY_SENSOR] = add_entities
 
 
 class FluvalSensor(FluvalEntity, BinarySensorEntity):

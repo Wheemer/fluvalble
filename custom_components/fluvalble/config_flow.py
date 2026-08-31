@@ -20,20 +20,15 @@ from .core import (
     CONF_ACTIVE_TIME,
     CONF_LAMP_PROFILE,
     CONF_PING_INTERVAL,
-    CONF_WIRE_DIALECT,
     DEFAULT_ACTIVE_TIME,
     DEFAULT_LAMP_PROFILE,
     DEFAULT_PING_INTERVAL,
-    DEFAULT_WIRE_DIALECT,
     DOMAIN,
     LAMP_PROFILE_AQUASKY,
     LAMP_PROFILE_AQUASKY3,
     LAMP_PROFILE_AUTO,
     LAMP_PROFILE_PLANT,
     LAMP_PROFILE_PLANT_PRO,
-    WIRE_DIALECT_RANDOM,
-    WIRE_DIALECT_RAND0,
-    WIRE_DIALECT_XOR_0E,
 )
 from .core.discovery import discovery_metadata, is_likely_fluval
 
@@ -243,7 +238,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             selected = user_input.get(CONF_MAC)
             if selected == MANUAL_ENTRY:
                 return await self.async_step_manual()
-            mac = normalize_mac(str(selected or ""))
+            mac = normalize_mac(selected)
             if MAC_REGEX.match(mac):
                 await self.async_set_unique_id(unique_id_from_mac(mac))
                 self._abort_if_unique_id_configured()
@@ -281,7 +276,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if mac in configured_normalized:
                 continue
             options[mac] = _device_display_name(info, is_fluval=True)
-        options[MANUAL_ENTRY] = "My device isn't in the list - enter MAC address manually"
+        options[MANUAL_ENTRY] = "My device isn't in the list — enter MAC address manually"
         return options
 
     async def async_step_manual(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -321,10 +316,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return OptionsFlowHandler()
 
 
-class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
+class OptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options for Fluval Aquarium LED.
 
-    Home Assistant reloads the config entry once after options are saved.
+    Uses OptionsFlow (not OptionsFlowWithConfigEntry) so HA injects
+    ``self.config_entry`` correctly — fixing the Configure gear 500 (#16).
     """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -341,23 +337,10 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
                 ): vol.In(
                     {
                         LAMP_PROFILE_AUTO: "Auto-detect from BLE name / protocol",
-                        LAMP_PROFILE_PLANT: "Plant / Marine 5-channel (Rose-Warm White)",
-                        LAMP_PROFILE_PLANT_PRO: "Plant Pro / Plant 4.0 (Red-Amber)",
+                        LAMP_PROFILE_PLANT: "Plant / Marine 5-channel (Rose–Warm White)",
+                        LAMP_PROFILE_PLANT_PRO: "Plant Pro / Plant 4.0 (Red–Amber)",
                         LAMP_PROFILE_AQUASKY: "AquaSky 2.0 (4-channel RGBW)",
                         LAMP_PROFILE_AQUASKY3: "AquaSky 3.0 / FACEBD (4-channel RGBW)",
-                    }
-                ),
-                vol.Optional(
-                    CONF_WIRE_DIALECT,
-                    default=options.get(
-                        CONF_WIRE_DIALECT,
-                        self.config_entry.data.get(CONF_WIRE_DIALECT, DEFAULT_WIRE_DIALECT),
-                    ),
-                ): vol.In(
-                    {
-                        WIRE_DIALECT_RANDOM: "FluvalConnect random-key encoding (recommended)",
-                        WIRE_DIALECT_XOR_0E: "Legacy fixed XOR 0x0E",
-                        WIRE_DIALECT_RAND0: "Legacy zero-key envelope",
                     }
                 ),
                 vol.Optional(

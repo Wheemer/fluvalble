@@ -13,40 +13,40 @@ set_channels:
       selector:
         text:
     red:
-      name: Channel 1 (Red / Rose)
-      description: Channel 1 intensity, 0-100%. AquaSky and Plant Pro use Red; classic Plant/Marine uses Rose.
+      name: Red
+      description: Red channel intensity, 0-100%.
       selector:
         number:
           min: 0
           max: 100
           unit_of_measurement: "%"
     green:
-      name: Channel 2 (Green / Blue)
-      description: Channel 2 intensity, 0-100%. AquaSky uses Green; Plant/Marine and Plant Pro use Blue.
+      name: Green
+      description: Green channel intensity, 0-100%.
       selector:
         number:
           min: 0
           max: 100
           unit_of_measurement: "%"
     blue:
-      name: Channel 3 (Blue / Cool White)
-      description: Channel 3 intensity, 0-100%. AquaSky uses Blue; Plant-family profiles use Cool/Cold White.
+      name: Blue
+      description: Blue channel intensity, 0-100%.
       selector:
         number:
           min: 0
           max: 100
           unit_of_measurement: "%"
     white:
-      name: Channel 4 (White)
-      description: Channel 4 intensity, 0-100%. AquaSky uses White; Plant profiles use Pure or Warm White.
+      name: White
+      description: White channel intensity, 0-100%.
       selector:
         number:
           min: 0
           max: 100
           unit_of_measurement: "%"
     channel_5:
-      name: Channel 5 (Warm White / Amber)
-      description: Optional channel 5 intensity, 0-100%. Classic Plant/Marine uses Warm White; Plant Pro uses Amber.
+      name: Violet
+      description: Violet channel intensity for compatible fixtures, 0-100%.
       selector:
         number:
           min: 0
@@ -169,7 +169,7 @@ save_schedule:
         object:
     mode:
       name: Schedule mode
-      description: Manual saves only. Native uploads 2-12 points once and lets the fixture run its own clock.
+      description: Manual saves the curve and disables the onboard scheduler. Native uploads 2-12 points once and lets the fixture run its own clock.
       selector:
         select:
           options:
@@ -190,64 +190,30 @@ set_native_auto_schedule:
       description: Optional Bluetooth MAC address when more than one Fluval light is configured.
       selector:
         text:
-    sunrise:
-      name: Sunrise
-      description: Object with hour, minute, and ramp duration from 0 to 240 minutes.
+    schedule:
+      name: Auto schedule
+      description: Sunrise, sunset, optional sleep time, ramp minutes, and five-channel day/night levels.
       required: true
       example:
-        hour: 8
-        minute: 0
-        ramp: 60
+        sunrise: "08:00"
+        sunrise_ramp: 60
+        sunset: "20:00"
+        sunset_ramp: 60
+        sleep: "23:00"
+        day:
+          red: 80
+          blue: 70
+          cool_white: 60
+          warm_white: 50
+          amber: 40
+        night:
+          red: 0
+          blue: 5
+          cool_white: 0
+          warm_white: 0
+          amber: 0
       selector:
         object:
-    sunset:
-      name: Sunset
-      description: Object with hour, minute, and ramp duration from 0 to 240 minutes; this is when ramp-down finishes.
-      required: true
-      example:
-        hour: 21
-        minute: 0
-        ramp: 60
-      selector:
-        object:
-    sleep:
-      name: Sleep
-      description: Optional object with hour and minute for full off; omit/null to disable sleep-off.
-      example:
-        hour: 22
-        minute: 30
-      selector:
-        object:
-    day_levels:
-      name: Day levels
-      description: Channel levels from 0-100. AquaSky uses channels 1-4; channel 5 is ignored.
-      required: true
-      example:
-        channel_1: 80
-        channel_2: 80
-        channel_3: 80
-        channel_4: 80
-        channel_5: 80
-      selector:
-        object:
-    night_levels:
-      name: Night levels
-      description: Channel levels from 0-100. AquaSky uses channels 1-4; channel 5 is ignored.
-      required: true
-      example:
-        channel_1: 0
-        channel_2: 10
-        channel_3: 0
-        channel_4: 0
-        channel_5: 0
-      selector:
-        object:
-    activate:
-      name: Activate Auto mode
-      description: Switch the fixture to Auto after writing the schedule.
-      default: true
-      selector:
-        boolean:
 
 set_native_pro_schedule:
   name: Set native Professional schedule
@@ -269,22 +235,46 @@ set_native_pro_schedule:
       required: true
       example:
         - time: "08:00"
-          channel_1: 0
-          channel_2: 0
-          channel_3: 0
-          channel_4: 0
-          channel_5: 0
+          red: 0
+          blue: 0
+          cool_white: 0
+          warm_white: 0
+          amber: 0
         - time: "12:00"
-          channel_1: 60
-          channel_2: 60
-          channel_3: 60
-          channel_4: 60
-          channel_5: 60
+          red: 80
+          blue: 70
+          cool_white: 60
+          warm_white: 50
+          amber: 40
       selector:
         object:
-    activate:
-      name: Activate Pro mode
-      description: Switch the fixture to Professional after writing the schedule.
-      default: true
+
+set_native_effect_schedule:
+  name: Set Plant Pro effect schedule
+  description: Store up to seven timed native-effect windows directly in a Plant Pro 4.0 fixture. An empty list clears all windows.
+  fields:
+    entry_id:
+      name: Config entry ID
+      description: Optional config entry ID when more than one Fluval light is configured.
       selector:
-        boolean:
+        text:
+    mac:
+      name: MAC address
+      description: Optional Bluetooth MAC address when more than one Fluval light is configured.
+      selector:
+        text:
+    windows:
+      name: Effect windows
+      description: Windows with start/end, effect, optional weekdays, and optional enabled state.
+      required: true
+      example:
+        - start: "12:00"
+          end: "12:10"
+          effect: Thunderstorm
+          weekdays:
+            - monday
+            - wednesday
+            - friday
+          enabled: true
+      selector:
+        object:

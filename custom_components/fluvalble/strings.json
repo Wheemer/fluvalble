@@ -1,14 +1,5 @@
 {
   "config": {
-    "abort": {
-      "already_configured": "Device is already configured",
-      "not_fluval": "The discovered Bluetooth device does not look like a Fluval LED controller."
-    },
-    "error": {
-      "cannot_connect": "Failed to connect",
-      "invalid_format": "Invalid MAC address format. Use AA:BB:CC:DD:EE:FF.",
-      "unknown": "Unexpected error"
-    },
     "step": {
       "user": {
         "data": {
@@ -18,7 +9,7 @@
       },
       "manual": {
         "data": {
-          "mac": "MAC address"
+          "mac": "[%key:common::config_flow::data::mac%]"
         },
         "description": "Enter the Bluetooth MAC address of your Fluval light (e.g. {mac_example}). You can find it in your phone's Bluetooth settings or the Fluval app."
       },
@@ -28,6 +19,15 @@
       "bluetooth_confirm": {
         "description": "Set up **{name}** as a Fluval Aquarium LED controller?"
       }
+    },
+    "error": {
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "invalid_format": "Invalid MAC address format. Use AA:BB:CC:DD:EE:FF.",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
+    },
+    "abort": {
+      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
+      "not_fluval": "The discovered Bluetooth device does not look like a Fluval LED controller."
     }
   },
   "options": {
@@ -36,15 +36,13 @@
         "title": "Connection options",
         "data": {
           "lamp_profile": "Lamp type",
-          "wire_dialect": "BLE command encoding",
           "ping_interval": "Keep-alive interval (seconds)",
           "active_time": "Active connection window (seconds)"
         },
         "data_description": {
-          "lamp_profile": "Override auto-detection when colour mode or spectrum is wrong. Plant uses RGB translated to Rose / Blue / Cold White / Pure White / Warm White; Plant Pro / 4.0 uses Red / Blue / Cool White / Warm White / Amber.",
-          "wire_dialect": "FluvalConnect random-key encoding is correct for current OLD-protocol lights. Select a legacy encoding only for a controller known to require it.",
+          "lamp_profile": "Override auto-detection when the wrong model or channel count is shown. Plant uses Rose / Blue / Cold White / Pure White / Warm White labels.",
           "ping_interval": "How often Home Assistant reads from the light to keep the BLE connection alive. Lower values improve reliability at the cost of slightly more radio traffic. Default: 10 s.",
-          "active_time": "How long to keep an active BLE GATT session after the last command. Use 0 for a persistent connection with the lowest command latency, or 30–600 seconds to disconnect when idle. Persistent connections consume a Bluetooth connection slot and can prevent FluvalConnect or the Fluval Gateway from connecting. Default: 0."
+          "active_time": "How long to maintain the BLE connection after the last command. Use 0 for a persistent connection with the lowest command latency, or 30–600 seconds to disconnect when idle. Persistent connections consume a Bluetooth connection slot and can prevent the Fluval app or gateway from connecting. Default: 120 s."
         }
       }
     }

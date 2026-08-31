@@ -7,29 +7,16 @@ from typing import Any
 
 from bleak import AdvertisementData
 
-from .protocol import product_id_from_manufacturer_data
-
-# Fluval/Hagen manufacturer/company ID present in Fluval LED advertisements.
-# This identifies the vendor for discovery; it does not identify the lamp's
-# GATT protocol family.
+# Fluval/Hagen manufacturer/company ID seen in Fluval LED advertisements.
 FLUVAL_MANUFACTURER_IDS = frozenset({12592})
 
-# Exact Fluval GATT / FACEBD service UUIDs. Do NOT match generic prefixes like
-# 0000fff0 (common on many BLE mesh devices) — that floods discovery prompts.
-FLUVAL_SERVICE_UUIDS = frozenset(
-    {
-        "00001000-0000-1000-8000-00805f9b34fb",
-        "00001002-0000-1000-8000-00805f9b34fb",
-        "facebd00-7261-6262-6974-696f74626c65",
-        "facebd00-0000-1000-8000-00805f9b34fb",
-    }
-)
 CLASSIC_FLUVAL_SERVICE_UUIDS = frozenset(
     {
         "00001000-0000-1000-8000-00805f9b34fb",
         "00001002-0000-1000-8000-00805f9b34fb",
     }
 )
+
 FACEBD_FLUVAL_SERVICE_UUIDS = frozenset(
     {
         "facebd00-7261-6262-6974-696f74626c65",
@@ -37,16 +24,23 @@ FACEBD_FLUVAL_SERVICE_UUIDS = frozenset(
     }
 )
 
+# Exact Fluval GATT / FACEBD service UUIDs. Do NOT match generic prefixes like
+# 0000fff0 (common on many BLE mesh devices) — that floods discovery prompts.
+FLUVAL_SERVICE_UUIDS = CLASSIC_FLUVAL_SERVICE_UUIDS | FACEBD_FLUVAL_SERVICE_UUIDS
+
 # Name tokens that are Fluval-branded on their own.
-_FLUVAL_BRAND_NAMES = ("fluval", "aquasky", "plantpro")
+_FLUVAL_BRAND_NAMES = ("fluval", "aquasky")
 
 # Plant/Marine/Reef Fluval advertisements look like "Plant 3.0_AABB", not
 # arbitrary "plant sensor" / "marine radio" devices. Require a Fluval-style
 # suffix (version, Nano, or underscore/hyphen serial).
 _SERIES_NAME_RE = re.compile(
-    r"^(?:plant\s*pro|plant|marine|reef)"
-    r"(?:\s*nano|\s*(?:pro|[234](?:\.0)?))?"
-    r"[_\-][a-z0-9]{3,}$",
+    r"^(plant|marine|reef)"
+    r"(?:"
+    r"\s*nano|"
+    r"\s*(?:pro|[234](?:\.0)?)|"
+    r"[_\-]"
+    r").+",
     re.IGNORECASE,
 )
 
@@ -81,31 +75,25 @@ def has_mesh_advertisement(advertisement: AdvertisementData | None) -> bool:
 
 
 def has_fluval_manufacturer_data(advertisement: AdvertisementData | None) -> bool:
-    """Return whether an advertisement contains Fluval manufacturer data."""
+    """Return whether the advertisement exposes Fluval manufacturer data."""
     if advertisement is None:
         return False
     return bool(FLUVAL_MANUFACTURER_IDS.intersection(advertisement.manufacturer_data))
 
 
 def has_fluval_service_uuid(advertisement: AdvertisementData | None) -> bool:
-    """Return whether a strong Fluval service/manufacturer signal is advertised."""
+    """Return whether a known Fluval service UUID is advertised."""
     if advertisement is None:
         return False
     keys = _advertised_protocol_keys(advertisement)
-
-    # FACEBD UUID variants are Fluval-specific enough to match on their own.
+    # FACEBD UUID variants all start with facebd and are specific enough to
+    # identify current Fluval advertisements on their own.
     if any(key in FACEBD_FLUVAL_SERVICE_UUIDS or key.startswith("facebd") for key in keys):
         return True
-
-    # The classic 00001000/00001002 UUIDs are not unique in the wild; at least
-    # one VEEPEAK OBD2 dongle advertises 00001000 and was falsely discovered as
-    # a Fluval light. Require the APK-known Fluval manufacturer payload too.
+    # Classic UUIDs are not unique to Fluval; require the Fluval manufacturer
+    # payload as corroborating evidence before prompting discovery.
     if any(key in CLASSIC_FLUVAL_SERVICE_UUIDS for key in keys):
-        return (
-            has_fluval_manufacturer_data(advertisement)
-            and product_id_from_manufacturer_data(advertisement.manufacturer_data) is not None
-        )
-
+        return has_fluval_manufacturer_data(advertisement)
     return False
 
 
@@ -114,7 +102,7 @@ def name_looks_fluval(name: str | None) -> bool:
     lowered = (name or "").strip().lower()
     if not lowered or lowered == "unknown":
         return False
-    if any(lowered.startswith(token) for token in _FLUVAL_BRAND_NAMES):
+    if any(token in lowered for token in _FLUVAL_BRAND_NAMES):
         return True
     # Require Fluval-style series names (Plant 3.0_… / Marine_…), not bare "plant".
     if _SERIES_NAME_RE.match(lowered):
@@ -138,25 +126,48 @@ def is_likely_fluval(
 
 
 def detect_model(name: str | None, advertisement: AdvertisementData | None) -> str:
-    """Infer the device model shown in Home Assistant DeviceInfo.
+    """Infer a friendly model name from the BLE advertisement."""
+    display_name = name or ""
+    lowered = display_name.lower()
+    facebd = has_facebd_advertisement(advertisement)
 
-    Prefer the BLE local name when it looks Fluval-branded — that string is
-    the model/serial the lamp actually advertises (e.g. ``Plant 3.0_AABBCC``)
-    and is what users expect in the device header.
-    """
-    display_name = (name or "").strip()
-    if display_name and name_looks_fluval(display_name):
+    if "plant" in lowered and name_looks_fluval(display_name):
+        if "pro" in lowered:
+            return "Plant Pro 4.0 Bluetooth LED"
+        if "nano" in lowered:
+            return "Plant Nano Bluetooth LED"
+        if "4.0" in lowered or "4_" in lowered:
+            return "Plant 4.0 Bluetooth LED"
+        if "3.0" in lowered or "3_" in lowered:
+            return "Plant 3.0 Bluetooth LED"
+        return "Plant Bluetooth LED"
+
+    if "marine" in lowered and name_looks_fluval(display_name):
+        if "3.0" in lowered or "3_" in lowered:
+            return "Marine 3.0 Bluetooth LED"
+        return "Marine Bluetooth LED"
+
+    if "reef" in lowered and name_looks_fluval(display_name):
+        return "Reef Bluetooth LED"
+
+    if "aquasky" in lowered:
+        if facebd or "3.0" in lowered or "3_" in lowered:
+            return "AquaSky 3.0 Bluetooth LED"
+        if "2.0" in lowered or "2_" in lowered:
+            return "AquaSky 2.0 Bluetooth LED"
+        return "AquaSky Bluetooth LED"
+
+    if "fluval" in lowered:
         return display_name
 
-    facebd = has_facebd_advertisement(advertisement)
     if has_fluval_service_uuid(advertisement):
         if facebd:
-            return "AquaSky 3.0"
-        if has_mesh_advertisement(advertisement):
-            return "Fluval Mesh"
-        return "Fluval LED"
+            return "AquaSky 3.0 Bluetooth LED"
+        if has_mesh_advertisement(advertisement) and name_looks_fluval(display_name):
+            return "Fluval Mesh Bluetooth LED"
+        return "Bluetooth LED"
 
-    return "Unknown Fluval LED"
+    return "Unknown Bluetooth LED"
 
 
 def discovery_metadata(name: str | None, advertisement: AdvertisementData) -> dict[str, Any]:

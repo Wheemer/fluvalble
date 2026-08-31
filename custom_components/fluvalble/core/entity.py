@@ -18,8 +18,9 @@ class FluvalEntity(Entity):
         self.device = device
         self.attr = attr
 
-        # Registry identifiers are case-sensitive. Bluetooth proxies can
-        # report mixed-case addresses, so keep one canonical uppercase form.
+        # HA unique_ids and device identifiers are case-sensitive. Proxies can
+        # report mixed-case MACs; keep a single uppercase form so entities are
+        # not duplicated or orphaned across reloads.
         mac = device.mac.upper()
         self._attr_device_info = DeviceInfo(
             connections={(CONNECTION_BLUETOOTH, mac)},

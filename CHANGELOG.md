@@ -8,224 +8,129 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
-- Added transport-neutral fixture-native Auto and Professional schedules for
-  classic, AquaSky 3.0/FACEBD, and Plant Pro/4.0 controllers using the exact
-  FluvalConnect packet layouts, including native readback and chunked BLE
-  writes for larger schedule payloads.
-- Added a **Fixture native** schedule-card mode that uploads a 2-12 point curve
-  once, replacing the former minute-by-minute Home Assistant executor.
+- Added standard Home Assistant config-entry and device diagnostics downloads
+  with recursive redaction and non-disruptive runtime snapshots.
+- Added transport-neutral fixture-native Auto and Professional schedule support
+  for classic, AquaSky 3.0/FACEBD, and Plant Pro/4.0 controllers using the
+  FluvalConnect protocol layouts.
+- Added explicit fixture schedule refresh/readback to the dashboard card. Native
+  Professional curves are imported only when **Load from fixture** is selected,
+  and the card identifies local, uploaded, and fixture-confirmed data.
+- Added an optional persistent BLE connection mode (`0`-second active window)
+  with immediate serialized recovery after unexpected disconnects.
 
 ### Changed
-- Downloadable diagnostics now use Home Assistant's standard recursive
-  redaction helper and remain strictly non-disruptive to BLE control.
-- Retained the fork's persistent BLE default (`active_time: 0`) while making
-  finite 30-600 second idle windows an explicit configuration alternative.
-
-### Fixed
-- Remove stale registry entries for all retired diagnostic controls, including
-  the former LED channel-test button.
-- Corrected AquaSky 3.0/FACEBD to its four-channel RGBW profile and retained the
-  last known channel state while controllers report an Automatic or
-  Professional native mode.
-- Restored explicit lamp-profile precedence after the upstream reconciliation so
-  four-channel AquaSky controllers cannot treat trailing status bytes as a
-  fifth physical channel.
-- Replaced disconnected Bleak clients instead of reconnecting the same object,
-  while resolving Home Assistant's latest local-adapter or ESPHome-proxy route
-  for each fresh connection.
-- Serialized reconnects with commands and integration unload so an old command
-  cannot disconnect a replacement client or restart work after shutdown.
-
----
-
-## [0.1.2] - 2026-08-30
-
-### Fixed
-- Kept classic Fluval manufacturer data as discovery evidence without treating
-  it as proof of the newer FACEBD protocol, preventing incorrect initial
-  protocol and channel-profile selection.
-- Restored canonical lowercase GATT UUIDs and defensive case-insensitive
-  characteristic lookup for ESPHome 2026.x / esp-idf 5.x Bluetooth proxies.
-- Normalized live Bluetooth addresses, entity unique IDs, and device-registry
-  identifiers to uppercase so mixed-case proxy reports cannot duplicate or
-  orphan Fluval entities.
-- Completed classic discovery corroboration by combining the Fluval/Hagen
-  manufacturer ID with a valid APK-format product payload.
-
----
-
-## [0.1.1] - 2026-08-27
-
-### Fixed
-- Corrected the documented minimum Home Assistant version to 2025.8.0, where
-  `OptionsFlowWithReload` became available, and synchronized the HACS metadata.
-- Legacy switch and per-channel number entities are now removed from the entity
-  registry during config-entry setup, alongside the retired diagnostic entities.
-- Replaced misleading MAC-shaped entity IDs with clearly labeled examples and
-  clarified that Home Assistant assigns the actual entity IDs.
-- Qualified native-effect support according to its real APK and hardware evidence,
-  consolidated duplicate Plant Pro schedule documentation, and documented all
-  connection options and integration actions, including profile-correct physical
-  channel labels in the Home Assistant action UI.
-
----
-
-## [0.1.0] - 2026-08-27
-
-This is the first consolidated stable release from the Wheemer fork. It includes
-the previously documented 0.0.32 and 0.0.33 work, which had not been published as
-GitHub releases.
+- Replaced the active-session Connection binary sensor with Reachable, based on
+  recent advertisements, successful connections, and successful commands. RSSI
+  is now a measurement sensor with its advertisement timestamp exposed.
+- Retired the duplicate LED switch now that the native light entity provides
+  power control, and removed stale switch registry entries during config-entry
+  setup.
+- Replaced the recorder-backed diagnostics sensor and command-sending diagnostic
+  buttons with Home Assistant's standard downloadable report. Collecting a
+  report does not scan, connect, disconnect, refresh state, or send BLE commands.
+- Remove stale registry entries for the retired Diagnostics, Refresh diagnostics,
+  and Test LED channels entities during config-entry setup.
+- Replaced the Home Assistant minute-by-minute schedule executor with fixture-native
+  scheduling. Existing Auto curves are migrated once when they contain 2–12
+  points; larger saved curves remain available in Manual mode for editing.
+- BLE reconnects now replace stale clients, use one bounded connector retry
+  cycle, and cannot race an in-flight command or integration unload.
 
 ### Added
-- First-class Home Assistant light control with protocol-aware colour mapping for
-  classic Plant/Marine, AquaSky RGBW, AquaSky 3.0, and Plant Pro / 4.0 profiles.
-- Eleven verified classic FluvalSmart dynamic effect IDs and the four native
-  Plant Pro / 4.0 Sun/Moon scene indices exposed through Home Assistant effects.
-- Home Assistant-managed scheduling plus Plant Pro / 4.0 fixture-native Auto and
-  Professional schedule write/readback support.
-- Clock synchronization, lamp-profile selection, redacted diagnostics, and a
-  Bluetooth **Reachable** diagnostic based on recent advertisements or a live
-  GATT connection.
-- Plant Pro / 4.0 mesh/SPP (`fff0`/`fff1`/`fff2`, `0xD1` + CBOR) control,
-  including five-channel Red/Blue/Cool White/Warm White/Amber handling.
+- Plant Pro / Plant 4.0 core BLE support using its native unencrypted SPP
+  transport for discovery, power, mode, five-channel colour, and live state.
+- Plant Pro RTC synchronization using the FluvalConnect mesh clock command so
+  fixture-owned schedules follow Home Assistant's local time.
+- Four Plant Pro native effects through Home Assistant's standard light effect
+  control, based on commands recovered from the FluvalConnect APK.
+- Plant Pro fixture-owned Auto and Pro schedules, plus seven timed native-effect
+  windows, with validated Home Assistant actions and diagnostics readback.
 
-### Changed
-- Home Assistant config entries now use the standard unload/setup lifecycle;
-  options reload without the integration attempting Python module self-reloads.
-- BLE connection handling uses one bounded retry cycle, immediate serialized
-  recovery for unexpected persistent-session drops, and optional permanent
-  connections via `active_time: 0` for low command latency.
-- Discovery is restricted to Fluval-specific names, services, and manufacturer
-  data, while configured lights are deduplicated by Bluetooth identity.
-- Python, CI, pre-commit, branding, and GitHub Actions dependencies are pinned at
-  current releases and monitored by Dependabot; CodeQL and repository security
-  automation are enabled.
-- User, contributor, agent, issue-triage, and release documentation now reflects
-  the light-first entity model, current hardware evidence, and branch-to-`main`
-  release process. Release-readiness checks run for `release/*` PRs.
-
-### Fixed
-- Power-off no longer sends intermediate colour frames or visibly fades through
-  unrelated colours.
-- Corrected classic and Plant Pro effect assignments, classic Blue-family channel
-  counts, AquaSky colour-state restoration, and ESPHome-proxy write behavior.
-- Fixed false Bluetooth detections, duplicate Fluval device-registry rows, stale
-  entity cleanup, options-flow failures, clock-sync retries, and reload teardown.
-- Diagnostics redact Bluetooth addresses, advertised names, manufacturer/service
-  payloads, and registry identifiers.
+### Documentation
+- Added a one-click HACS repository button and Plant Pro native schedule usage.
 
 ### Credits
-- Original Fluval BLE integration and upstream project by
-  [@MrMooreUK](https://github.com/MrMooreUK) and prior contributors.
-- Plant Pro / 4.0 protocol behavior was derived from FluvalConnect APK analysis
-  and cross-checked against the hardware-validated MIT-licensed
-  [cryystyy/fluval-plant-pro-4-homeassistant](https://github.com/cryystyy/fluval-plant-pro-4-homeassistant)
-  project.
-- Classic protocol research and supporting work by
-  [@kw217](https://github.com/kw217) and the Fluval community.
-- Hardware validation, Home Assistant refinements, and consolidated release work
-  by [@Wheemer](https://github.com/Wheemer).
+- Plant Pro schedule protocol research and hardware validation by
+  [@cryystyy](https://github.com/cryystyy/fluval-plant-pro-4-homeassistant).
 
 ---
 
-## [0.0.33] - 2026-08-27
+## [0.0.11] — 2026-08-31
 
 ### Added
-- Plant Pro / Plant 4.0 BLE support using the FluvalConnect `fff0`/`fff1`/`fff2`
-  mesh/SPP protocol (`0xD1` + CBOR).
-- Plant Pro / 4.0 native Sun, Crescent Moon, Full Moon, and Half Moon scenes
-  through the Home Assistant light effect control, using the four mesh indices
-  present in FluvalConnect.
-- Native Plant Pro / 4.0 Auto schedule writes using the fixture's sunrise,
-  sunset, sleep, day-level, and night-level packet fields.
-- Native Plant Pro / 4.0 Professional schedule writes using fixture-side
-  point-schedule storage.
-- Native Plant Pro / 4.0 Auto and Professional schedule readback from status
-  keys 8-13 for diagnostics and future UI use.
-- Plant Pro / 4.0 lamp profile with Red / Blue / Cool White / Warm White /
-  Amber channel labels.
-- Bluetooth discovery matchers for Plant Pro, Plant 4.0, Reef 4.0, and Reef
-  Nano 4.0 names while preserving strict filtering against generic mesh devices.
-- Tests covering Plant Pro / 4.0 packet shapes, mixed-service GATT resolution,
-  discovery matching, effects, native schedule services, and HA schedule
-  compatibility.
+- APK-native weather effects for positively identified classic Fluval BLE
+  controllers, exposed through Home Assistant's standard light effect control (#35).
 
 ### Changed
-- Fresh BLE connections now use one bounded `bleak-retry-connector` retry cycle
-  instead of nesting three outer attempts around four internal attempts.
-- Unexpected drops in always-connected mode trigger an immediate serialized
-  reconnect instead of waiting for the next keep-alive interval.
-- **Reachable** is true for a live GATT session or recent BLE activity and
-  re-evaluates when `last_seen` ages out.
-- **`active_time: 0`** keeps the GATT session connected permanently (connects on integration load).
-- RSSI remains raw advertisement data, now includes its advertisement timestamp,
-  and uses the Home Assistant measurement state class.
-- Plant Pro Professional schedules are capped at the official, hardware-tested
-  limit of 12 points; sunrise/sunset ramps are capped at 240 minutes.
-- Native Professional service validation now preserves explicit Plant Pro
-  `channel_1`-`channel_5` values instead of forcing them through RGBW aliases.
-- Mesh / Plant Pro devices that expose both old `1000` and mesh `fff0` services
-  now prefer the mesh `fff2` write and `fff1` notify characteristics.
-- Home Assistant runtime data handling now preserves HA-managed schedule mode and
-  locking across the newer config-entry runtime-data lifecycle.
-
-### Fixed
-- Removed the nonstandard `importlib.reload()` package self-reloader. Config
-  entries now use Home Assistant's normal unload/setup lifecycle without mixing
-  old and new Python class generations.
-- Power-off no longer emits intermediate colour frames, preventing yellow/white
-  mixes from visibly drifting red during shutdown while retaining the prior mix
-  for the next power-on.
-- Corrected the four Plant Pro mesh effect assignments, which had reused classic
-  thunder/color-cycle names for the APK's sun and moon indices.
-- Corrected classic Blue-family product IDs `0x0161`-`0x0164` to four channels.
-- Existing duplicate Fluval device-registry rows are safely merged into the
-  canonical Bluetooth-MAC device when no other integration references them.
-- Downloadable diagnostics redact Bluetooth addresses, local names, raw service
-  data, manufacturer data, and registry identifiers.
-- Fixed an unawaited keep-alive coroutine warning in the test suite.
-
-### Credits
-- Plant Pro / 4.0 packet behavior was informed by FluvalConnect APK
-  reverse-engineering.
-- Plant Pro / 4.0 protocol design was cross-checked against
-  [cryystyy/fluval-plant-pro-4-homeassistant](https://github.com/cryystyy/fluval-plant-pro-4-homeassistant).
-- Hardware behavior and Home Assistant integration refinements by
-  [@Wheemer](https://github.com/Wheemer).
-- Original Fluval BLE integration and upstream project maintained by
-  [@MrMooreUK](https://github.com/MrMooreUK) and prior contributors.
+- Tightened Fluval BLE icon and logo to a flat bar-and-wave mark (#36).
 
 ---
 
-## [0.0.32] - 2026-07-21
+## [0.0.10] — 2026-08-30
 
 ### Added
-- Real **light entity** with proper translation: Plant/Marine RGB ↔ Rose/Blue/CW/PW/WW (preview matches mix); AquaSky native RGBW.
-- AquaSky 3.0/FACEBD discovery, diagnostics, and write support.
-- Lovelace schedule, spectrum bar, and wavelength preview cards.
+- Native Home Assistant RGBW control for AquaSky fixtures and RGB spectrum
+  translation for Plant/Marine fixtures (#32).
+
+### Changed
+- Replaced the individual channel number entities with the standard light
+  entity's colour and brightness controls. Existing channel entities are
+  removed from the entity registry during config-entry setup (#32).
+
+---
+
+## [0.0.9] — 2026-08-30
+
+### Fixed
+- Require Fluval manufacturer data for classic discovery (#27).
+- Restore lowercase BLE characteristic UUIDs for ESPHome 2026.x / esp-idf 5.x
+  Bluetooth proxies and keep mixed-case MAC identifiers stable (#29).
+- Treat manufacturer ID 12592 as Fluval vendor evidence for discovery, not
+  FACEBD protocol evidence, so classic AquaSky 2.0 stays four-channel before
+  GATT (#31).
+
+---
+
+## [0.0.8] — 2026-08-30
+
+### Added
+- **Sync clock** button and automatic RTC sync on BLE connect (fixes #8, #25).
+- AquaSky 3.0/FACEBD discovery, diagnostics, and write support (#22).
+- Lovelace schedule, spectrum bar, and wavelength preview cards (#15).
 - HA-managed schedule storage, auto mode, and physical preview services.
-- **Lamp type** option (Plant / AquaSky 2.0 / AquaSky 3.0 / auto) with Plant channel labels (Rose / Blue / Cold White / Pure White / Warm White).
-- **Sync clock** button and automatic RTC sync on connect (old `0x0E`, FACEBD keys 101/102, mesh `0xCD`).
-- Experimental **mesh** (`0000fff0`) support: `0xD1` + CBOR framing.
+- ESP32 boards running ESPHome Bluetooth Proxy as a supported connection path.
+- A Test LED Channels button that verifies power and each physical channel,
+  records the results in Diagnostics, and restores the previous light state.
+- Lamp profile option (`auto` / `plant` / `aquasky` / `aquasky3`) with tighter
+  model detection and packet-based channel-count hints (#24, fixes #17).
 
 ### Changed
-- Per-channel number sliders disabled by default (advanced); use the Light entity as primary control.
-- Channel entities use 0–100% consistently; old BLE wire scale (0–1000) is converted on decode.
-- Prefer BLE write-without-response when available (ESPHome-compatible, Aquasky 2.0).
+- Renamed channel 5 to Violet.
 - Skip unchanged channel writes and throttle physical preview writes.
-- Options changes reload the integration so ping/active-time take effect.
+- Resolve every BLE connection through Home Assistant so it can automatically
+  select the best available local adapter or ESPHome proxy.
+- Keep schedule execution in Home Assistant's background scheduler so it does
+  not depend on an open dashboard.
 
 ### Fixed
-- Restored AquaSky colours remain synchronized with the Home Assistant icon after power-on.
-- Options Configure gear 500 (`OptionsFlow` / missing `config_entry`) — #16.
-- Plant devices mis-identified as AquaSky — #17.
-- AquaSky 3.0 names no longer forced to 4 channels.
-- Clock sync retries after BLE disconnect/reconnect (#8).
-- Preview stop/restore behavior and FACEBD write target handling.
-- Removed dead send-queue / legacy state-packet paths; public schedule helpers.
+- FACEBD commands now use the hardware-verified command characteristic and
+  confirm the requested state through the response characteristic.
+- Retry and report unverified AquaSky writes instead of treating an accepted
+  BLE write as proof that the fixture changed.
+- Schedule preview stop/restore, live slider dragging, physical playback, and
+  unavailable control behavior during BLE reconnects.
+- Options Configure flow returning HTTP 500 (#18, fixes #16).
+- Rediscovery of already-configured lamps caused by mixed-case unique IDs (#26).
+- Old BLE AquaSky writes now prefer write-without-response and scale channels
+  correctly (#20, related to #6).
+
+### Security
+- Harden schedule inputs and pin GitHub Actions to SHAs (#23).
 
 ### Notes
-- Clock sync, Aquasky 2.0 write behaviour, and mesh path still need hardware validation.
+- AquaSky 3.0 control and state verification were validated on physical
+  hardware through an ESPHome Bluetooth proxy.
 - For issues with other Fluval lights, please open a GitHub issue with the
   model, Home Assistant version, diagnostics output, and relevant logs.
 

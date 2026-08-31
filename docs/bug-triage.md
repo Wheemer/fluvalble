@@ -1,39 +1,80 @@
 # Open Bug Triage
 
-See [`issue-coverage.md`](issue-coverage.md) for the full matrix across forks.
+This document captures the state of the two currently-open bugs. Neither
+is fixed yet; both are documented here so they remain solvable once we
+have the right evidence.
 
-| # | Title | Status in this fork |
-|---|-------|---------------------|
-| [#6](https://github.com/MrMooreUK/fluvalble/issues/6) | Aquasky 2.0: commands ignored | Fixed and hardware-validated for product `0x0103` through an ESPHome Bluetooth proxy; other variants still need reports |
-| [#8](https://github.com/MrMooreUK/fluvalble/issues/8) | RTC / schedule after power cut | Mitigated — sync on connect + button; re-sync after disconnect |
-| [#16](https://github.com/MrMooreUK/fluvalble/issues/16) | Options Configure 500 | Fixed |
-| [#17](https://github.com/MrMooreUK/fluvalble/issues/17) | Plant shown as Aquasky | Fixed |
-| [#14](https://github.com/MrMooreUK/fluvalble/issues/14) | Spectrum graph discussion | Cards present; ongoing polish |
+| # | Title | Status | Blocker |
+|---|-------|--------|---------|
+| [#6](https://github.com/MrMooreUK/fluvalble/issues/6) | Aquasky 2.0: connected but does not respond to commands | Open — investigation | Needs debug logs from a real Aquasky 2.0 |
+| [#8](https://github.com/MrMooreUK/fluvalble/issues/8) | Automatic mode schedule wrong after power cut (lamp RTC reset) | Open — investigation | Needs protocol capture of clock-sync command (or confirmation it doesn't exist) |
 
-## Hardware-gated protocol work
+---
 
-- Plant Pro / 4.0 core control and native schedule keys 1-13 are implemented.
-  Status keys 14-22 remain undecoded; do not infer additional effects from APK
-  images alone.
-- AquaSky 3.0/FACEBD native Auto/Pro keys 114-122 are implemented from exact
-  FluvalConnect APK call sites. The codec and transport are covered by tests,
-  but the schedule path still needs a real AquaSky 3.0 hardware report; do not
-  describe it as hardware-verified yet. Scheduled effect key 123 remains
-  unexposed pending behavior validation.
-- Siena 2.0, Roma/Shaker 2.0, V&V, Reef Pro, and the other named fixtures remain
-  in scope where FluvalConnect assigns them to the implemented OLD, WIFI, or
-  MESH controller paths. Track fixture reports against those APK assignments;
-  do not invent a separate protocol without manufacturer evidence.
-- Classic native Auto (`0x07`) and Pro (`0x10`) are implemented from the
-  FluvalConnect APK and exposed through the transport-neutral native schedule
-  actions. Regular commands are hardware-verified on product `0x0103`; native
-  schedule behavior still needs a fixture report. Sunrise (`0x0A`, effect 12),
-  Find (`0x0F`), and scheduled effects (`0x11`) remain unexposed pending
-  behavior validation.
+## #6 — Aquasky 2.0 commands ignored
+
+**Symptom:** Integration connects to the lamp, but toggling the LED switch
+or moving a channel slider has no effect. Device briefly disconnects then
+reconnects with the previous state unchanged.
+
+**Hypothesis:** Either (a) the v0.0.4 BLE client is not re-usable after
+idle and the user is on an old release, or (b) the Aquasky 2.0 requires
+`response=False` on its write characteristic where Plant 3.0 accepts
+`response=True`.
+
+**What we need to make progress:**
+
+- [ ] Confirm reporter is on v0.0.5+ (the BLE-reuse fix from PR #4 was
+      released in v0.0.5). If they're on v0.0.4, ask them to retest.
+- [ ] Debug log capture from an Aquasky 2.0 with
+      `custom_components.fluvalble: debug` enabled, while sending one
+      command. The log lines we need look like:
+      ```
+      Sending to XX:XX:XX:XX:XX:XX — raw: 68 04 ... | encrypted: 54 ...
+      ```
+- [ ] A BLE sniffer trace (ESP32 or nRF) of the same operation in the
+      official Fluval app, for byte-level comparison.
+
+**Workaround:** None yet. Users should keep the lamp in Manual mode and
+control channels via automations.
+
+---
+
+## #8 — Schedule drift after power cut
+
+**Symptom:** After a power interruption, the lamp's built-in Automatic /
+Professional lighting schedule runs at the wrong times. Manual mode is
+unaffected.
+
+**Root cause:** The lamp's automatic schedule is driven by an internal
+RTC. Power loss resets the RTC to its epoch, and the schedule drifts
+from wall-clock time. The official Fluval app presumably re-syncs the
+clock on connect; this integration does not.
+
+**What we need to make progress:**
+
+- [ ] Confirm the BLE protocol includes a clock-sync command. Sources
+      to check:
+  - Fluval Plant 3.0 BLE protocol thread on Planted Tank Forum
+  - ESPHome `fluval` external component source
+  - A captured traffic dump from the official Fluval app
+- [ ] If a command exists: implement and test sending it after
+      `CMD_STATUS` on each fresh connection.
+- [ ] If no command exists: document as a known limitation in README
+      and recommend Manual mode for HA-controlled setups.
+
+**Workaround:** Set the Mode select entity to **Manual** and drive
+brightness from HA automations (sunrise / sunset, or a fixed schedule).
+This is already covered in the README's example automations.
+
+---
 
 ## Reporting a new bug
 
-1. Confirm the integration version.
+When a new issue is opened, please ask the reporter to:
+
+1. Confirm the integration version (Settings → Devices & services →
+   Fluval Aquarium LED → ⓘ).
 2. Enable debug logging:
    ```yaml
    logger:
@@ -41,5 +82,6 @@ See [`issue-coverage.md`](issue-coverage.md) for the full matrix across forks.
      logs:
        custom_components.fluvalble: debug
    ```
-3. Capture the log around a failing command (`Writing Fluval packet to … response=…`).
-4. Note lamp model and Bluetooth adapter.
+3. Capture the log snippet around a failing command.
+4. Note the lamp model and Bluetooth adapter (built-in vs ESP32
+   proxy vs other).

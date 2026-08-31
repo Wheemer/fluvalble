@@ -6,7 +6,7 @@ import logging
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory
+from homeassistant.const import EntityCategory, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -23,14 +23,14 @@ def create_entities(device: Device) -> list:
     return [FluvalSyncClockButton(device, "sync_clock")]
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    add_entities: AddEntitiesCallback,
-) -> None:
-    """Set up Fluval buttons from a config entry."""
-    del hass
-    add_entities(create_entities(config_entry.runtime_data.device))
+async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_entities: AddEntitiesCallback) -> None:
+    runtime = config_entry.runtime_data
+    device = runtime.device
+
+    if device:
+        add_entities(create_entities(device))
+    else:
+        runtime.pending_add_entities[Platform.BUTTON] = add_entities
 
 
 class FluvalSyncClockButton(FluvalEntity, ButtonEntity):
