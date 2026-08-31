@@ -169,17 +169,17 @@ save_schedule:
         object:
     mode:
       name: Schedule mode
-      description: Manual saves the schedule without applying it. Auto lets Home Assistant apply the saved schedule over time.
+      description: Manual saves only. Auto has Home Assistant apply values every minute. Native uploads 2-12 points once and lets the fixture run its own clock.
       selector:
         select:
           options:
             - manual
             - auto
-            - professional
+            - native
 
 set_native_auto_schedule:
-  name: Set native Plant Pro Auto schedule
-  description: Write a native Plant Pro / 4.0 Auto sunrise/sunset schedule into the fixture.
+  name: Set native Auto schedule
+  description: Write the controller's native Auto sunrise/sunset schedule using the classic, FACEBD, or Plant Pro protocol.
   fields:
     entry_id:
       name: Config entry ID
@@ -221,7 +221,7 @@ set_native_auto_schedule:
         object:
     day_levels:
       name: Day levels
-      description: Five Plant Pro channel levels, 0-100.
+      description: Channel levels from 0-100. AquaSky uses channels 1-4; channel 5 is ignored.
       required: true
       example:
         channel_1: 80
@@ -233,7 +233,7 @@ set_native_auto_schedule:
         object:
     night_levels:
       name: Night levels
-      description: Five Plant Pro channel levels, 0-100.
+      description: Channel levels from 0-100. AquaSky uses channels 1-4; channel 5 is ignored.
       required: true
       example:
         channel_1: 0
@@ -251,8 +251,8 @@ set_native_auto_schedule:
         boolean:
 
 set_native_pro_schedule:
-  name: Set native Plant Pro Professional schedule
-  description: Write native Plant Pro / 4.0 Professional schedule points into the fixture.
+  name: Set native Professional schedule
+  description: Write native Professional schedule points using the classic, FACEBD, or Plant Pro protocol.
   fields:
     entry_id:
       name: Config entry ID
@@ -266,7 +266,7 @@ set_native_pro_schedule:
         text:
     points:
       name: Schedule points
-      description: Two to 12 points with time plus channel_1 through channel_5. Plant Pro order is Red, Blue, Cool White, Warm White, Amber.
+      description: Two to 12 points with time plus channel_1 through channel_5. AquaSky ignores channel_5; Plant Pro order is Red, Blue, Cool White, Warm White, Amber.
       required: true
       example:
         - time: "08:00"
