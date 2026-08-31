@@ -14,7 +14,8 @@ def test_wifi_all_zone_packet_contains_manual_key_and_channel_values():
 
     assert decoded[protocol.WIFI_MANUAL_KEY] == 0
     assert decoded[protocol.WIFI_CHANNEL_KEYS[0]] == 10
-    assert decoded[protocol.WIFI_CHANNEL_KEYS[4]] == 50
+    assert list(decoded) == [protocol.WIFI_MANUAL_KEY, *protocol.WIFI_CHANNEL_KEYS]
+    assert protocol.WIFI_AUTO_SUNRISE_KEY not in decoded
 
 
 def test_wifi_values_are_clamped_to_percent_range():
