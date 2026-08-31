@@ -132,6 +132,7 @@ class Client:
         self.read_reg_uuid: str | None = None
         self.raw_facebd = False
         self.raw_mesh = False
+        self._connection_lock = asyncio.Lock()
         self._command_lock = asyncio.Lock()
         self.last_error: str | None = None
         self.last_write_targets: list[str] = []
@@ -147,6 +148,7 @@ class Client:
         self._classic_handshake_done = False
         self._product_channel_count: int | None = None
         self._ready_fired = False
+        self._ready_task: asyncio.Task | None = None
         # Connect on first command — do not contend with HA startup BLE.
         self.connect_task = None
 
@@ -301,91 +303,117 @@ class Client:
             self.raw_mesh,
         )
 
+    def _current_device(self) -> BLEDevice:
+        """Refresh the HA-selected local adapter or proxy route."""
+        if self.device_provider is not None:
+            try:
+                current_device = self.device_provider()
+                if current_device is not None:
+                    self.device = current_device
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Unable to refresh Fluval BLE route", exc_info=err)
+        return self.device
+
+    def _schedule_ready_callback(self) -> None:
+        """Run post-connect housekeeping outside connection/command locks."""
+        if not self.ready_callback or self._ready_fired:
+            return
+        self._ready_fired = True
+        self._ready_task = asyncio.create_task(self._async_run_ready_callback())
+
+    async def _async_run_ready_callback(self) -> None:
+        """Run and contain post-connect callback failures."""
+        try:
+            if self.ready_callback:
+                await self.ready_callback()
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.warning("Fluval post-connect callback failed", exc_info=err)
+        finally:
+            self._ready_task = None
+
     async def _ensure_client(self):
         """Connect and subscribe to notifications if needed."""
-        if self.client and self.client.is_connected:
-            return self.client
+        async with self._connection_lock:
+            if self._stopping:
+                raise BleakError("Fluval BLE client is stopping")
+            if self.client and self.client.is_connected:
+                return self.client
 
-        if self.client is not None:
-            # Bleak clients are single-connection objects. Reusing one after a
-            # disconnect is unreliable, especially when HA changes the local
-            # adapter or ESPHome proxy route. Dispose of it and let
-            # bleak-retry-connector create a fresh client for this connection.
-            await self._safe_disconnect()
+            stale_client = self.client
+            self.client = None
+            if stale_client is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(stale_client.disconnect(), timeout=5)
 
-        if self.device_provider is not None:
-            current_device = self.device_provider()
-            if current_device is not None:
-                self.device = current_device
-
-        # bleak-retry-connector already owns its retry loop. Wrapping it in a
-        # second three-attempt loop caused up to twelve attempts and made an
-        # ordinary reconnect look hung. Keep one bounded connector cycle.
-        try:
-            self.client = await establish_connection(
-                BleakClient,
-                self.device,
-                self.device.address,
-                disconnected_callback=self._on_disconnected,
-                max_attempts=CONNECT_RETRIES,
-                timeout=CONNECT_TIMEOUT,
-            )
-        except (TimeoutError, BleakError, EOFError) as err:
-            self.last_error = f"connect failed: {type(err).__name__}: {err}"
-            await self._safe_disconnect()
-            raise
-
-        await self._resolve_characteristics()
-        if not self.raw_facebd and not self.raw_mesh:
-            await self._async_request_classic_mtu()
-        for uuid in self.notify_uuids:
-            with contextlib.suppress(BleakError):
-                await self.client.start_notify(uuid, self.notify_callback)
-
-        if not self.raw_facebd and not self.raw_mesh:
-            await self._async_classic_session_init()
-
-        if self.status_callback:
-            self.status_callback(True)
-        self.last_error = None
-
-        if self.ready_callback and not self._ready_fired:
-            self._ready_fired = True
+            device = self._current_device()
             try:
-                await self.ready_callback()
-            except Exception as err:  # pylint: disable=broad-except
-                _LOGGER.warning("Fluval post-connect callback failed", exc_info=err)
+                client = await establish_connection(
+                    BleakClient,
+                    device,
+                    device.address,
+                    disconnected_callback=self._on_disconnected,
+                    max_attempts=CONNECT_RETRIES,
+                    timeout=CONNECT_TIMEOUT,
+                    ble_device_callback=self._current_device,
+                )
+            except (TimeoutError, BleakError, EOFError) as err:
+                self.last_error = f"connect failed: {type(err).__name__}: {err}"
+                raise
 
-        return self.client
+            if self._stopping:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(client.disconnect(), timeout=5)
+                raise BleakError("Fluval BLE client stopped while connecting")
+
+            self.client = client
+            try:
+                await self._resolve_characteristics()
+                if not self.raw_facebd and not self.raw_mesh:
+                    await self._async_request_classic_mtu()
+                for uuid in self.notify_uuids:
+                    with contextlib.suppress(BleakError):
+                        await client.start_notify(uuid, self.notify_callback)
+
+                if not self.raw_facebd and not self.raw_mesh:
+                    await self._async_classic_session_init()
+            except Exception:
+                self.client = None
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(client.disconnect(), timeout=5)
+                raise
+
+            if self.status_callback:
+                self.status_callback(True)
+            self.last_error = None
+
+            self._schedule_ready_callback()
+
+            return client
 
     def _on_disconnected(self, client: BleakClient) -> None:
         """Update state immediately and restore an opted-in persistent link."""
         if client is not self.client:
             return
+        self.client = None
         self._classic_session_ready = False
         self._classic_handshake_done = False
         self._ready_fired = False
+        if self._ready_task and not self._ready_task.done():
+            self._ready_task.cancel()
         if self.status_callback:
             self.status_callback(False)
+
+        # Wake the heartbeat so it stops using the disconnected client and
+        # becomes the single owner of any persistent reconnect cycle.
+        if self.ping_future:
+            self.ping_future.cancel()
+
         if self._stopping or self._active_time != 0:
             return
-        if self.connect_task and not self.connect_task.done():
-            return
-        self.connect_task = asyncio.create_task(self._async_restore_persistent_connection())
-
-    async def _async_restore_persistent_connection(self) -> None:
-        """Reconnect once after an unexpected persistent-session drop."""
-        try:
-            async with self._command_lock:
-                if self._stopping or self._active_time != 0:
-                    return
-                await self._ensure_client()
-                self.ping()
-        except (TimeoutError, BleakError, EOFError) as err:
-            self.last_error = f"persistent reconnect failed: {type(err).__name__}: {err}"
-            _LOGGER.debug("Fluval persistent reconnect failed", exc_info=err)
-        finally:
-            self.connect_task = None
+        if not self.ping_task or self.ping_task.done():
+            self.ping()
 
     async def _async_request_classic_mtu(self) -> None:
         """Request the OLD-light MTU before enabling notifications (APK order)."""
@@ -423,7 +451,6 @@ class Client:
 
     def ping(self):
         """Start the ping task to periodically talk to the Fluval."""
-        self._stopping = False
         if self._active_time == 0:
             self.ping_time = float("inf")
         else:
@@ -481,11 +508,6 @@ class Client:
                 await self._write_packet(self.command_write_uuid, protocol.mesh_read_params_packet())
             # Classic: clock + 6805 already sent in _async_classic_session_init.
 
-            if self.ready_callback:
-                try:
-                    await self.ready_callback()
-                except Exception as err:  # pylint: disable=broad-except
-                    _LOGGER.warning("Fluval post-connect callback failed", exc_info=err)
         except (TimeoutError, BleakError) as err:
             _LOGGER.debug("Fluval initial connection failed", exc_info=err)
             if self.status_callback:
@@ -534,54 +556,48 @@ class Client:
         loop = asyncio.get_event_loop()
         while time.time() < self.ping_time and not self._stopping:
             try:
-                client = await self._ensure_client()
+                # Wait until any command using the old link has finished its
+                # failure handling before replacing that connection.
+                async with self._command_lock:
+                    client = await self._ensure_client()
 
-                while time.time() < self.ping_time and not self._stopping:
+                while time.time() < self.ping_time and not self._stopping and client is self.client:
                     if self.wake_read_uuid:
                         with contextlib.suppress(BleakError):
                             await client.read_gatt_char(self.wake_read_uuid)
 
                     self.ping_future = loop.create_future()
                     loop.call_later(self._ping_interval, self.ping_future.cancel)
-                    with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                    try:
                         await self.ping_future
+                    except asyncio.CancelledError:
+                        task = asyncio.current_task()
+                        if task is not None and task.cancelling():
+                            raise
 
                 if self._stopping:
                     break
-
-                # Idle window expired. Never tear down while a command holds
-                # the lock — extend the window and keep the session.
-                if self._command_lock.locked():
-                    self.ping_time = time.time() + max(self._ping_interval, 5)
+                if client is not self.client:
                     continue
 
                 if self._active_time == 0:
                     self.ping_time = float("inf")
                     continue
 
+                # Never let the idle deadline disconnect a command in flight.
                 async with self._command_lock:
-                    if self.client is not None:
-                        with contextlib.suppress(BleakError, TimeoutError):
-                            await self.client.disconnect()
-                        self._classic_session_ready = False
-                        self._classic_handshake_done = False
-                    if self.status_callback:
-                        self.status_callback(False)
+                    if time.time() < self.ping_time:
+                        continue
+                    await self._safe_disconnect()
             except TimeoutError:
                 pass
             except asyncio.CancelledError:
-                break
+                raise
             except BleakError as e:
                 _LOGGER.debug("ping error", exc_info=e)
-                self.client = None
-                if self.status_callback:
-                    self.status_callback(False)
-                await asyncio.sleep(1)
             except Exception as e:
                 _LOGGER.warning("ping error", exc_info=e)
-                self.client = None
-                if self.status_callback:
-                    self.status_callback(False)
+            if not self._stopping and time.time() < self.ping_time:
                 await asyncio.sleep(1)
 
         self.ping_task = None
@@ -764,15 +780,29 @@ class Client:
 
     async def _safe_disconnect(self):
         """Disconnect the underlying BLE client without masking the original error."""
-        if self.client:
+        ready_task = self._ready_task
+        if ready_task is not None and ready_task is not asyncio.current_task():
+            self._ready_task = None
+            ready_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(ready_task, timeout=3)
+        client = self.client
+        self.client = None
+        if client:
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(self.client.disconnect(), timeout=5)
-            self.client = None
+                await asyncio.wait_for(client.disconnect(), timeout=5)
         self._classic_session_ready = False
         self._classic_handshake_done = False
+        self._ready_fired = False
+        if self.status_callback:
+            self.status_callback(False)
 
     async def disconnect(self):
-        """Disconnect from the Fluval and stop background work."""
+        """Disconnect from the Fluval while keeping this client reusable."""
+        await self._async_disconnect(final=False)
+
+    async def _async_disconnect(self, *, final: bool) -> None:
+        """Disconnect and optionally prevent this client from being reused."""
         self._stopping = True
         self.ping_time = 0
 
@@ -791,15 +821,21 @@ class Client:
                 await asyncio.wait_for(self.connect_task, timeout=3)
             self.connect_task = None
 
+        if self._ready_task:
+            self._ready_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(self._ready_task, timeout=3)
+            self._ready_task = None
+
         with contextlib.suppress(Exception):
             await asyncio.wait_for(self._safe_disconnect(), timeout=6)
 
-        if self.status_callback:
-            self.status_callback(False)
+        if not final:
+            self._stopping = False
 
     async def stop(self):
-        """Compatibility wrapper for the integration unload path."""
-        await self.disconnect()
+        """Permanently stop background work during integration unload."""
+        await self._async_disconnect(final=True)
 
 
 def decrypt(data: bytearray) -> bytes:

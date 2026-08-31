@@ -577,22 +577,22 @@ def test_connection_attribute_uses_recent_activity_or_live_gatt():
     assert device.attribute("connection")["extra"]["gatt_connected"] is True
 
 
-def test_persistent_connection_retries_after_initial_failure():
-    asyncio.run(_async_test_persistent_connection_retries_after_initial_failure())
+def test_persistent_connection_delegates_recovery_to_heartbeat():
+    asyncio.run(_async_test_persistent_connection_delegates_recovery_to_heartbeat())
 
 
-async def _async_test_persistent_connection_retries_after_initial_failure():
+async def _async_test_persistent_connection_delegates_recovery_to_heartbeat():
     device = _make_device()
     device._active_time = 0
-    device._async_prepare_command = AsyncMock(side_effect=[False, True])
+    device._async_prepare_command = AsyncMock(return_value=False)
     client = MagicMock()
     device.client = client
 
     with patch("custom_components.fluvalble.core.device.asyncio.sleep", new=AsyncMock()) as sleep:
         await device.async_start_persistent_connection()
 
-    assert device._async_prepare_command.await_count == 2
-    sleep.assert_awaited_once_with(5)
+    device._async_prepare_command.assert_awaited_once()
+    sleep.assert_not_awaited()
     client.ping.assert_called_once()
 
 

@@ -290,6 +290,8 @@ class Device:
 
         if self.client is None:
             self.client = self._make_client(device)
+            if self._active_time == 0:
+                self.start_persistent_connection()
         else:
             self.client.device = device
             self.client._product_channel_count = self._resolved_channel_count()
@@ -399,29 +401,22 @@ class Device:
         """Connect on startup and keep GATT open when active_time is 0."""
         if self._active_time != 0:
             return
+        if self._shutdown_requested:
+            return
 
-        for attempt in range(1, 4):
-            if self._shutdown_requested:
-                return
-
-            if await self._async_prepare_command():
-                if self.client is not None:
-                    self.client.ping()
-                _LOGGER.info("Fluval persistent BLE session started for %s", self.address)
-                return
-
-            if attempt == 3:
-                _LOGGER.warning("Fluval persistent connect failed for %s after %s attempts", self.address, attempt)
-                return
-
-            delay = min(30, attempt * 5)
+        # Client._ensure_client delegates its bounded attempts to
+        # bleak-retry-connector. Do not wrap that cycle in another retry loop;
+        # the persistent heartbeat becomes the sole continuing reconnect owner.
+        connected = await self._async_prepare_command()
+        if self.client is not None:
+            self.client.ping()
+        if connected:
+            _LOGGER.info("Fluval persistent BLE session started for %s", self.address)
+        else:
             _LOGGER.warning(
-                "Fluval persistent connect failed for %s; retrying in %ss",
+                "Initial Fluval persistent connect failed for %s; heartbeat recovery remains active",
                 self.address,
-                delay,
             )
-            with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.sleep(delay)
 
     def start_persistent_connection(self) -> None:
         """Schedule the persistent connection task once for this config entry."""

@@ -117,6 +117,7 @@ async def _async_test_fresh_connection_retry_cycle():
     assert establish.await_count == 1
     assert establish.await_args.kwargs["max_attempts"] == 3
     assert establish.await_args.kwargs["disconnected_callback"] == client._on_disconnected
+    assert establish.await_args.kwargs["ble_device_callback"] == client._current_device
 
 
 def test_disconnected_bleak_client_is_replaced_instead_of_reused():
@@ -147,6 +148,38 @@ async def _async_test_disconnected_bleak_client_is_replaced_instead_of_reused():
     assert establish.await_args.args[1] is current_device
 
 
+def test_post_connect_callback_does_not_block_connection_locks():
+    asyncio.run(_async_test_post_connect_callback_does_not_block_connection_locks())
+
+
+async def _async_test_post_connect_callback_does_not_block_connection_locks():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def ready_callback():
+        started.set()
+        await release.wait()
+
+    ble_device = MagicMock(address="AA:BB:CC:DD:EE:FF")
+    client = Client(ble_device, ready_callback=ready_callback)
+    connected = SimpleNamespace(is_connected=True, start_notify=AsyncMock(), disconnect=AsyncMock())
+    client._resolve_characteristics = AsyncMock()
+    client._async_request_classic_mtu = AsyncMock()
+    client._async_classic_session_init = AsyncMock()
+
+    with patch(
+        "custom_components.fluvalble.core.client.establish_connection",
+        new=AsyncMock(return_value=connected),
+    ):
+        assert await asyncio.wait_for(client._ensure_client(), timeout=1) is connected
+
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert client._ready_task is not None
+    release.set()
+    await asyncio.sleep(0)
+    await client.stop()
+
+
 def test_unexpected_persistent_disconnect_schedules_immediate_reconnect():
     status_callback = MagicMock()
     ble_device = MagicMock(address="AA:BB:CC:DD:EE:FF")
@@ -164,6 +197,109 @@ def test_unexpected_persistent_disconnect_schedules_immediate_reconnect():
     status_callback.assert_called_once_with(False)
     create_task.assert_called_once()
     assert client.classic_session_ready is False
+    assert client.client is None
+
+
+def test_finite_disconnect_does_not_start_background_reconnect():
+    client = _make_client()
+    client._active_time = 120
+    connected = MagicMock()
+    client.client = connected
+
+    with patch("custom_components.fluvalble.core.client.asyncio.create_task") as create_task:
+        client._on_disconnected(connected)
+
+    assert client.client is None
+    create_task.assert_not_called()
+
+
+def test_stale_disconnect_callback_cannot_clear_replacement_client():
+    client = _make_client()
+    stale = MagicMock()
+    replacement = MagicMock()
+    client.client = replacement
+
+    client._on_disconnected(stale)
+
+    assert client.client is replacement
+
+
+def test_final_stop_prevents_disconnect_callback_from_reconnecting():
+    client = _make_client()
+    client._active_time = 0
+    connected = MagicMock()
+    client.client = connected
+    client._stopping = True
+
+    with patch("custom_components.fluvalble.core.client.asyncio.create_task") as create_task:
+        client._on_disconnected(connected)
+
+    assert client.client is None
+    create_task.assert_not_called()
+
+
+def test_disconnect_is_reusable_but_stop_is_final():
+    asyncio.run(_async_test_disconnect_is_reusable_but_stop_is_final())
+
+
+async def _async_test_disconnect_is_reusable_but_stop_is_final():
+    client = _make_client()
+    client.client = SimpleNamespace(is_connected=True, disconnect=AsyncMock())
+
+    await client.disconnect()
+    assert client._stopping is False
+
+    client.client = SimpleNamespace(is_connected=True, disconnect=AsyncMock())
+    await client.stop()
+    assert client._stopping is True
+
+
+def test_persistent_heartbeat_waits_for_command_before_reconnecting():
+    asyncio.run(_async_test_persistent_heartbeat_waits_for_command_before_reconnecting())
+
+
+async def _async_test_persistent_heartbeat_waits_for_command_before_reconnecting():
+    client = _make_client()
+    client._active_time = 0
+    client._ping_interval = 60
+    client.wake_read_uuid = "wake"
+    client.ping_time = float("inf")
+    old = SimpleNamespace(is_connected=True, read_gatt_char=AsyncMock(return_value=b""))
+    fresh = SimpleNamespace(is_connected=True, read_gatt_char=AsyncMock(return_value=b""), start_notify=AsyncMock())
+    client.client = old
+    client._resolve_characteristics = AsyncMock()
+    client._async_request_classic_mtu = AsyncMock()
+    client._async_classic_session_init = AsyncMock()
+    heartbeat = asyncio.create_task(client._ping_loop())
+    client.ping_task = heartbeat
+
+    for _ in range(10):
+        if client.ping_future is not None:
+            break
+        await asyncio.sleep(0)
+    assert client.ping_future is not None
+
+    await client._command_lock.acquire()
+    try:
+        with patch(
+            "custom_components.fluvalble.core.client.establish_connection",
+            new=AsyncMock(return_value=fresh),
+        ) as establish:
+            client._on_disconnected(old)
+            await asyncio.sleep(0)
+            establish.assert_not_awaited()
+
+            client._command_lock.release()
+            for _ in range(10):
+                if establish.await_count:
+                    break
+                await asyncio.sleep(0)
+            establish.assert_awaited_once()
+            assert client.client is fresh
+    finally:
+        if client._command_lock.locked():
+            client._command_lock.release()
+        await client.stop()
 
 
 def test_classic_service_pins_apk_1001_and_1002_characteristics():

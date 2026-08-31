@@ -14,6 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   writes for larger schedule payloads.
 - Added a **Fixture native** schedule-card mode that uploads a 2-12 point curve
   once, replacing the former minute-by-minute Home Assistant executor.
+- Retained the fork's persistent BLE default (`active_time: 0`) while making
+  finite 30-600 second idle windows an explicit configuration alternative.
 
 ### Fixed
 - Corrected AquaSky 3.0/FACEBD to its four-channel RGBW profile and retained the
@@ -25,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Replaced disconnected Bleak clients instead of reconnecting the same object,
   while resolving Home Assistant's latest local-adapter or ESPHome-proxy route
   for each fresh connection.
+- Serialized reconnects with commands and integration unload so an old command
+  cannot disconnect a replacement client or restart work after shutdown.
 
 ---
 

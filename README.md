@@ -122,7 +122,7 @@ Assistant Core.
 | **Lamp type** | Auto-detect (default), Plant/Marine 5-channel, Plant Pro/4.0, AquaSky 2.0, AquaSky 3.0/FACEBD | Override detection when the colour model or channel profile is wrong. |
 | **BLE command encoding** | FluvalConnect random-key (default), fixed XOR `0x0E`, zero-key envelope | Keep the recommended FluvalConnect encoding unless protocol evidence shows that a legacy controller needs another envelope. |
 | **Keep-alive interval** | 5-60 seconds; default 10 | Controls how often an open GATT session is read. |
-| **Active connection window** | 0-600 seconds; default 0 | `0` keeps GATT connected; a positive value disconnects after that many idle seconds and reconnects on demand. Use a finite window when FluvalConnect or a Fluval Gateway must share a Plant Pro/4.0 fixture. |
+| **Active connection window** | `0`, or 30-600 seconds; default 0 | `0` keeps GATT connected; a finite value disconnects after that many idle seconds and reconnects on demand. Use persistent mode for the lowest command latency, or a finite window when FluvalConnect or a Fluval Gateway must share the fixture. |
 
 ---
 
@@ -361,8 +361,8 @@ The integration uses Home Assistant's Bluetooth support to connect directly to t
 **BLE connection lifecycle:**
 - On load the integration checks Home Assistant's Bluetooth cache. With `active_time: 0` it opens the persistent session immediately; finite sessions connect on demand.
 - A keep-alive loop reads at the configured interval while a session is open.
-- Unexpected persistent-session drops schedule an immediate serialized reconnect. Fresh connections use one bounded three-attempt `bleak-retry-connector` cycle rather than nested retry loops.
-- The default remains `active_time: 0` for low command latency. Plant Pro / 4.0 allows only one Bluetooth central, so permanent mode blocks FluvalConnect and the Fluval Gateway while Home Assistant is connected. Select a finite window under **Configure** when app/gateway coexistence matters.
+- Unexpected persistent-session drops wake one serialized reconnect owner. Fresh connections use one bounded three-attempt `bleak-retry-connector` cycle and Home Assistant's current local-adapter or ESPHome-proxy route.
+- The fork retains `active_time: 0` as its default for the lowest command latency. Plant Pro / 4.0 allows only one Bluetooth central, so persistent mode blocks FluvalConnect and the Fluval Gateway while Home Assistant is connected; select a finite window under **Configure** when coexistence matters.
 - RSSI comes only from advertisements. It can remain unchanged while a controller is connected and no longer advertising; this does not mean the value is fabricated.
 
 Home Assistant config-entry reloads unload entities, cancel callbacks/tasks, close BLE, and set the entry up again without restarting Core. Installing changed Python source is different: Home Assistant must load those modules once after installation, so a Core restart is required for a newly installed code version. The integration does not attempt unsafe in-process `importlib.reload()` hot swapping.

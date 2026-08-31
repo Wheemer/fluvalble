@@ -9,7 +9,7 @@ CONF_LAMP_PROFILE = "lamp_profile"
 CONF_WIRE_DIALECT = "wire_dialect"
 CONF_CHANNEL_ENDIAN = "channel_endian"
 DEFAULT_PING_INTERVAL = 10  # seconds between keep-alive reads
-DEFAULT_ACTIVE_TIME = 0  # 0 = keep GATT connected permanently; else seconds after last command
+DEFAULT_ACTIVE_TIME = 0  # 0 = persistent; otherwise disconnect after this idle window
 DEFAULT_LAMP_PROFILE = "auto"
 DEFAULT_WIRE_DIALECT = "random"
 
