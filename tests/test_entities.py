@@ -229,6 +229,7 @@ def test_retired_switch_number_and_diagnostic_entities_are_removed(monkeypatch):
         SimpleNamespace(entity_id="switch.fluval_led", unique_id="AABBCCDDEEFF_led_on_off"),
         SimpleNamespace(entity_id="number.fluval_red", unique_id="AABBCCDDEEFF_channel_1"),
         SimpleNamespace(entity_id="sensor.fluval_diagnostics", unique_id="AABBCCDDEEFF_diagnostics"),
+        SimpleNamespace(entity_id="button.fluval_test_channels", unique_id="AABBCCDDEEFF_test_led_channels"),
         SimpleNamespace(entity_id="light.fluval_light", unique_id="AABBCCDDEEFF_light"),
         SimpleNamespace(entity_id="sensor.fluval_signal", unique_id="AABBCCDDEEFF_rssi"),
     ]
@@ -261,6 +262,7 @@ def test_retired_switch_number_and_diagnostic_entities_are_removed(monkeypatch):
         "switch.fluval_led",
         "number.fluval_red",
         "sensor.fluval_diagnostics",
+        "button.fluval_test_channels",
     ]
     device_registry.async_update_device.assert_called_once_with("device-id", serial_number=None)
 
