@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   FluvalConnect packet layouts, including native readback and chunked BLE
   writes for larger schedule payloads.
 - Added a **Fixture native** schedule-card mode that uploads a 2-12 point curve
-  once while retaining the existing Home Assistant Auto executor as a fallback.
+  once, replacing the former minute-by-minute Home Assistant executor.
 
 ### Fixed
 - Corrected AquaSky 3.0/FACEBD to its four-channel RGBW profile and retained the

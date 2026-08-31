@@ -635,6 +635,23 @@ def test_mesh_native_auto_schedule_sends_fixture_schedule_and_auto_mode():
     asyncio.run(_async_test_mesh_native_auto_schedule())
 
 
+def test_stopping_preview_reactivates_the_native_fixture_mode():
+    asyncio.run(_async_test_stopping_preview_reactivates_the_native_fixture_mode())
+
+
+async def _async_test_stopping_preview_reactivates_the_native_fixture_mode():
+    device = _make_device()
+    device.preview_restore_values = {"channel_1": 50}
+    device.preview_restore_mode = "professional"
+    device.async_select_option = AsyncMock(return_value=True)
+    device.async_set_channels = AsyncMock(return_value=True)
+
+    await device.async_stop_preview()
+
+    device.async_select_option.assert_awaited_once_with("mode", "professional")
+    device.async_set_channels.assert_not_awaited()
+
+
 async def _async_test_mesh_native_auto_schedule():
     device = _make_device(name="PlantPro_AABBCC", model="PlantPro_AABBCC")
     device.client = _mesh_client()

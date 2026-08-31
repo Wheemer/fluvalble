@@ -48,7 +48,9 @@ Support depends on the controller protocol, not only the retail product name.
 | AquaSky 3.0 `FACEBD` CBOR | AquaSky 3.0 | Power, mode, four RGBW channels, clock and state readback. | Native Auto/Pro write and readback use FluvalConnect CBOR keys 114-122. This path is APK-derived and needs AquaSky 3.0 hardware validation before it is considered verified. |
 | Plant Pro / 4.0 `FFF0/FFF1/FFF2` CBOR | Plant Pro and protocol-compatible Plant/Reef/Nano 4.0 controllers | Power, mode, five channels and state readback. Plant Pro is hardware-validated by the credited reference project; other 4.0 variants still need testers. | Native Auto/Pro write and readback are implemented. Four FluvalConnect Sun/Moon scene indices are exposed; keys 14-22 are not fully decoded. |
 
-FluvalConnect also lists Siena 2.0, Roma 2.0, Shaker 2.0, V&V and other newer products. This integration does **not** claim those models until their advertisements, GATT profiles and commands are captured and tested. Being visible in FluvalConnect does not by itself prove protocol compatibility.
+The support boundary follows FluvalConnect's own product table and its OLD,
+WIFI/FACEBD, and MESH controller routing. The integration does not speculate
+about products or protocols that are absent from the manufacturer APK.
 
 ---
 
@@ -136,7 +138,7 @@ or `mac`. The Home Assistant action editor displays the full field schema from
 | `fluvalble.set_channels` | Set one or more physical channel positions, with an optional ramp. The legacy `red`/`green`/`blue`/`white` field names map to channels 1-4; the light entity performs the configured profile's colour translation. |
 | `fluvalble.preview_schedule` | Compress and physically preview an HA-managed 24-hour channel schedule. |
 | `fluvalble.stop_preview` | Stop an active physical preview and restore the appropriate schedule state. |
-| `fluvalble.save_schedule` | Save a schedule in Manual, HA Auto, or Fixture native mode. Fixture native uploads 2-12 points once as a Professional curve. |
+| `fluvalble.save_schedule` | Save a schedule in Manual or Fixture native mode. Fixture native uploads 2-12 points once as a Professional curve. |
 | `fluvalble.set_native_auto_schedule` | Write protocol-native sunrise, sunset, sleep, day-level, and night-level values into a classic, FACEBD, or Plant Pro fixture. |
 | `fluvalble.set_native_pro_schedule` | Write 2-12 protocol-native Professional points into a classic, FACEBD, or Plant Pro fixture. |
 
@@ -147,9 +149,8 @@ or `mac`. The Home Assistant action editor displays the full field schema from
 Optional dashboard cards are available for AquaSky 3.0 schedule editing,
 spectrum bar preview, and wavelength preview. See
 [`docs/lovelace-cards.md`](docs/lovelace-cards.md) for setup instructions,
-example YAML, usage notes, and preview safety guidance. Choose **HA Auto** for
-minute-by-minute Home Assistant execution or **Fixture native** to upload a
-2-12 point curve to a compatible controller.
+example YAML, usage notes, and preview safety guidance. Choose **Fixture native**
+to upload a 2-12 point curve to the controller's onboard scheduler.
 
 ---
 
@@ -242,9 +243,8 @@ Replace entity IDs with yours, and `person.you` / `notify.mobile` with your actu
 Compatible classic, FACEBD, and Plant Pro / 4.0 fixtures can store schedules
 directly in the light. In the schedule card, **Fixture native** uploads the
 current curve as a Professional schedule and activates it; the fixture then runs
-from its own clock without recurring Home Assistant channel writes. **HA Auto**
-remains available as the compatibility fallback. The native services below are
-also available for automations and scripts.
+from its own clock without recurring Home Assistant channel writes. The native
+services below are also available for automations and scripts.
 
 ### Native Auto schedule
 
@@ -318,7 +318,7 @@ either `entry_id` or `mac` when more than one Fluval light is configured.
 | **Light entity doesn't turn the fixture on/off** | Confirm the configured lamp profile and that the official app can control the fixture. Close the app so it releases BLE, then reload the Fluval BLE config entry and retry. Plant Pro / 4.0 permits only one Bluetooth central. |
 | **Entities show "unavailable"** | The light may be out of range, off, or the BLE connection dropped. Move the light or HA adapter closer; check Reachable and RSSI. |
 | **Wrong model or channel count** | Open **Configure** on the integration and set **Lamp type** (Plant 5ch / Plant Pro 4.0 / AquaSky 2.0 / AquaSky 3.0). Plant names are detected from the BLE advertisement; FACEBD/mesh and status packets refine channel count. |
-| **Schedule wrong after power cut** | Use the **Sync clock** button (also runs automatically on connect). Keep Manual mode if you drive schedules from Home Assistant. |
+| **Schedule wrong after power cut** | Use the **Sync clock** button (also runs automatically on connect), then upload the native schedule again if the fixture did not retain it. |
 | **Channels or mode don't update** | Some features (e.g. mode change) may require the device to send state back; if the firmware doesn't report mode, the dropdown may not reflect external changes. |
 | **Colour or brightness changes don't reach the fixture** | See [Colour and brightness troubleshooting](#colour-and-brightness-troubleshooting) below. |
 

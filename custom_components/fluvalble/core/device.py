@@ -175,6 +175,7 @@ class Device:
         self._persistent_connect_task: asyncio.Task | None = None
         self._shutdown_requested = False
         self.preview_restore_values: dict[str, int] | None = None
+        self.preview_restore_mode: str | None = None
         self._clock_synced = False
         self._clock_sync_lock = asyncio.Lock()
         # Last colour the user asked HA for — keeps the colour wheel from
@@ -1034,6 +1035,9 @@ class Device:
         """Preview a 24-hour schedule on the real light in compressed time."""
         await self.async_stop_preview()
         self.preview_restore_values = {channel: int(self.values.get(channel, 0)) for channel in self.numbers()}
+        self.preview_restore_mode = (
+            self.values.get("mode") if self.values.get("mode") in {"automatic", "professional"} else None
+        )
         self.preview_task = asyncio.create_task(self._async_preview_schedule(points, duration, step_seconds))
         return True
 
@@ -1044,7 +1048,12 @@ class Device:
             with contextlib.suppress(asyncio.CancelledError):
                 await self.preview_task
         self.preview_task = None
-        if self.preview_restore_values:
+        restore_mode = self.preview_restore_mode
+        self.preview_restore_mode = None
+        if restore_mode is not None:
+            self.preview_restore_values = None
+            await self.async_select_option("mode", restore_mode)
+        elif self.preview_restore_values:
             restore_values = self.preview_restore_values
             self.preview_restore_values = None
             await self.async_set_channels(restore_values)

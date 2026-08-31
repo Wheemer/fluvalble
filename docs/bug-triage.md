@@ -20,8 +20,10 @@ See [`issue-coverage.md`](issue-coverage.md) for the full matrix across forks.
   but the schedule path still needs a real AquaSky 3.0 hardware report; do not
   describe it as hardware-verified yet. Scheduled effect key 123 remains
   unexposed pending behavior validation.
-- Siena 2.0, Roma/Shaker 2.0, V&V and Reef Pro require advertisement, GATT and
-  command captures before discovery or support claims are added.
+- Siena 2.0, Roma/Shaker 2.0, V&V, Reef Pro, and the other named fixtures remain
+  in scope where FluvalConnect assigns them to the implemented OLD, WIFI, or
+  MESH controller paths. Track fixture reports against those APK assignments;
+  do not invent a separate protocol without manufacturer evidence.
 - Classic native Auto (`0x07`) and Pro (`0x10`) are implemented from the
   FluvalConnect APK and exposed through the transport-neutral native schedule
   actions. Regular commands are hardware-verified on product `0x0103`; native

@@ -32,3 +32,13 @@ def test_all_registered_action_schemas_are_listed_in_readme():
     }
     for service in services:
         assert f"`fluvalble.{service}`" in readme
+
+
+def test_schedule_ui_and_runtime_use_only_the_fixture_scheduler():
+    runtime = (ROOT / "custom_components/fluvalble/__init__.py").read_text()
+    card = (ROOT / "custom_components/fluvalble/www/fluvalble-schedule-card.js").read_text()
+
+    assert "async_track_time_interval" not in runtime
+    assert "_async_run_auto_schedule" not in runtime
+    assert 'option value="auto"' not in card
+    assert "startAutoClock" not in card
