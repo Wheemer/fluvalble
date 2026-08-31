@@ -321,6 +321,7 @@ class Device:
             wire_dialect=self.wire_dialect,
             channel_endian=self.channel_endian,
             profile_learned_callback=self._on_wire_profile_learned,
+            device_provider=self._connectable_ble_device,
         )
         client._product_channel_count = self._resolved_channel_count()
         return client
@@ -455,12 +456,12 @@ class Device:
     def _resolved_channel_count(self) -> int:
         """Return 4 or 5 channels from profile, packet hint, or name heuristics."""
         profile = (self.lamp_profile or LAMP_PROFILE_AUTO).lower()
-        if self._channel_count_hint in (4, 5):
-            return self._channel_count_hint
         if profile == LAMP_PROFILE_AQUASKY:
             return 4
         if profile in (LAMP_PROFILE_PLANT, LAMP_PROFILE_PLANT_PRO, LAMP_PROFILE_AQUASKY3):
             return 5
+        if self._channel_count_hint in (4, 5):
+            return self._channel_count_hint
         if self.facebd or self._uses_mesh_protocol():
             return 5
 
@@ -1609,6 +1610,25 @@ class Device:
 
         return None
 
+    def _connectable_ble_device(self) -> BLEDevice | None:
+        """Return Home Assistant's current local or proxy route for the lamp."""
+        if self.hass is not None:
+            device = bluetooth.async_ble_device_from_address(
+                self.hass,
+                self.address,
+                connectable=True,
+            )
+            if device is not None:
+                return device
+            service_info = bluetooth.async_last_service_info(
+                self.hass,
+                self.address,
+                connectable=True,
+            )
+            if service_info is not None:
+                return service_info.device
+        return self.client.device if self.client is not None else None
+
     def _set_diagnostic_error(self, status: str, message: str) -> None:
         """Store command failures in the diagnostics sensor for quick copying."""
         self.diagnostics.update(
@@ -1731,10 +1751,13 @@ class Device:
 
         if self.values["mode"] == "manual":
             # Wire scale is 0–1000 (percent * 10); HA entities use 0–100.
-            # Status word endianness is auto-detected per packet.
-            count = 5 if len(payload) > 14 else 4
+            # Resolve the fixture profile before interpreting trailing bytes.
+            # Classic four-channel status packets can be longer than 14 bytes,
+            # so packet length alone can misread metadata as a fifth channel.
+            count = self._resolved_channel_count()
             channels, _endian = protocol.decode_channel_words(payload, count)
-            self._channel_count_hint = 5 if len(channels) >= 5 else 4
+            if (self.lamp_profile or LAMP_PROFILE_AUTO).lower() == LAMP_PROFILE_AUTO:
+                self._channel_count_hint = 5 if len(channels) >= 5 else 4
             for index, raw in enumerate(channels):
                 self.values[f"channel_{index + 1}"] = max(0, min(100, round(raw / 10)))
             for index in range(len(channels), 5):
