@@ -8,14 +8,20 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_MAC
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntry
+from homeassistant.helpers.redact import async_redact_data
 
 REDACTED = "**REDACTED**"
 REDACT_KEYS = {
+    CONF_MAC,
     "address",
     "advertisement_name",
+    "bluetooth_address",
     "configured_mac",
+    "entry_id",
+    "local_name",
     "mac",
     "manufacturer_data",
     "name",
@@ -73,14 +79,6 @@ async def _build_report(entry: ConfigEntry) -> dict[str, Any]:
     return _redact_diagnostics(report)
 
 
-def _redact_diagnostics(value: Any, *, key: str | None = None) -> Any:
-    """Recursively redact device identifiers while retaining protocol evidence."""
-    if key in REDACT_KEYS:
-        return REDACTED
-    if isinstance(value, dict):
-        return {item_key: _redact_diagnostics(item, key=str(item_key)) for item_key, item in value.items()}
-    if isinstance(value, list):
-        return [_redact_diagnostics(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_redact_diagnostics(item) for item in value)
-    return value
+def _redact_diagnostics(value: dict[str, Any]) -> dict[str, Any]:
+    """Use Home Assistant's recursive redaction helper."""
+    return async_redact_data(value, REDACT_KEYS)

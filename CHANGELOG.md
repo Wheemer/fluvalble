@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   writes for larger schedule payloads.
 - Added a **Fixture native** schedule-card mode that uploads a 2-12 point curve
   once, replacing the former minute-by-minute Home Assistant executor.
+
+### Changed
+- Downloadable diagnostics now use Home Assistant's standard recursive
+  redaction helper and remain strictly non-disruptive to BLE control.
 - Retained the fork's persistent BLE default (`active_time: 0`) while making
   finite 30-600 second idle windows an explicit configuration alternative.
 

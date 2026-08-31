@@ -181,6 +181,21 @@ def _stub_homeassistant():
     ha_helpers.device_registry = ha_dr
     ha_helpers.entity_registry = ha_er
 
+    # ---- homeassistant.helpers.redact ----
+    ha_redact = types.ModuleType("homeassistant.helpers.redact")
+
+    def _async_redact_data(value, keys):
+        if isinstance(value, dict):
+            return {
+                key: "**REDACTED**" if key in keys else _async_redact_data(item, keys) for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [_async_redact_data(item, keys) for item in value]
+        return value
+
+    ha_redact.async_redact_data = _async_redact_data
+    ha_helpers.redact = ha_redact
+
     # ---- homeassistant.helpers.entity_platform ----
     ha_ep = types.ModuleType("homeassistant.helpers.entity_platform")
     ha_ep.AddEntitiesCallback = MagicMock
@@ -332,6 +347,7 @@ def _stub_homeassistant():
         "homeassistant.helpers": ha_helpers,
         "homeassistant.helpers.device_registry": ha_dr,
         "homeassistant.helpers.entity_registry": ha_er,
+        "homeassistant.helpers.redact": ha_redact,
         "homeassistant.helpers.entity": ha_entity,
         "homeassistant.helpers.entity_platform": ha_ep,
         "homeassistant.helpers.event": ha_event,
