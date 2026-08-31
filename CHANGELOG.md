@@ -7,7 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- Added transport-neutral fixture-native Auto and Professional schedules for
+  classic, AquaSky 3.0/FACEBD, and Plant Pro/4.0 controllers using the exact
+  FluvalConnect packet layouts, including native readback and chunked BLE
+  writes for larger schedule payloads.
+- Added a **Fixture native** schedule-card mode that uploads a 2-12 point curve
+  once, replacing the former minute-by-minute Home Assistant executor.
+
 ### Fixed
+- Corrected AquaSky 3.0/FACEBD to its four-channel RGBW profile and retained the
+  last known channel state while controllers report an Automatic or
+  Professional native mode.
 - Restored explicit lamp-profile precedence after the upstream reconciliation so
   four-channel AquaSky controllers cannot treat trailing status bytes as a
   fifth physical channel.

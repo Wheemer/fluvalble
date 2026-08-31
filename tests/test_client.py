@@ -366,6 +366,37 @@ async def _async_test_facebd_write_packet_prefers_write_without_response():
     assert kwargs["response"] is False
 
 
+def test_facebd_write_packet_chunks_native_schedule_at_att_limit():
+    asyncio.run(_async_test_facebd_write_packet_chunks_native_schedule_at_att_limit())
+
+
+async def _async_test_facebd_write_packet_chunks_native_schedule_at_att_limit():
+    client = _make_client()
+    client.raw_facebd = True
+    client.raw_mesh = False
+    mock_client = MagicMock()
+    mock_client.write_gatt_char = AsyncMock()
+    mock_client.mtu_size = 23
+    client.client = mock_client
+
+    characteristic = MagicMock()
+    characteristic.properties = ["write", "write-without-response"]
+    characteristic.max_write_without_response_size = 20
+    client._get_characteristic = MagicMock(return_value=characteristic)
+    packet = bytes(range(45))
+
+    with patch("custom_components.fluvalble.core.client.asyncio.sleep", new=AsyncMock()) as sleep:
+        await client._write_packet("FACEBD80-7261-6262-6974-696F74626C65", packet)
+
+    assert [call.kwargs["data"] for call in mock_client.write_gatt_char.await_args_list] == [
+        packet[:20],
+        packet[20:40],
+        packet[40:],
+    ]
+    assert all(call.kwargs["response"] is False for call in mock_client.write_gatt_char.await_args_list)
+    assert sleep.await_count == 2
+
+
 def test_send_now_writes_primary_facebd_target_only():
     asyncio.run(_async_test_send_now_writes_primary_facebd_target_only())
 

@@ -606,7 +606,19 @@ class Client:
             response = False
         payloads: list[bytes | bytearray]
         if self.raw_facebd or self.raw_mesh:
-            payloads = [data]
+            # FluvalConnect packages raw WiFi/mesh writes at MTU - 3. Native
+            # Pro schedules can exceed the default 20-byte ATT payload and
+            # must be delivered as consecutive chunks for the fixture to
+            # reassemble them.
+            chunk_size = 20
+            characteristic_limit = getattr(characteristic, "max_write_without_response_size", None)
+            if isinstance(characteristic_limit, int) and characteristic_limit > 0:
+                chunk_size = characteristic_limit
+            else:
+                mtu_size = getattr(self.client, "mtu_size", None)
+                if isinstance(mtu_size, int) and mtu_size > 3:
+                    chunk_size = mtu_size - 3
+            payloads = [data[offset : offset + chunk_size] for offset in range(0, len(data), chunk_size)]
         else:
             payloads = [bytes(frame) for frame in protocol.encrypted_old_frames(data, dialect=self.wire_dialect)]
 
@@ -728,7 +740,7 @@ class Client:
 
                 self.ping()
 
-                if refresh_state and (self.raw_facebd or self.raw_mesh):
+                if refresh_state:
                     await asyncio.sleep(POST_WRITE_STATE_DELAY)
                     with contextlib.suppress(BleakError):
                         await self.request_state()

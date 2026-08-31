@@ -15,13 +15,21 @@ See [`issue-coverage.md`](issue-coverage.md) for the full matrix across forks.
 - Plant Pro / 4.0 core control and native schedule keys 1-13 are implemented.
   Status keys 14-22 remain undecoded; do not infer additional effects from APK
   images alone.
-- AquaSky 3.0/FACEBD fixture-native schedules and effects still need captures.
-- Siena 2.0, Roma/Shaker 2.0, V&V and Reef Pro require advertisement, GATT and
-  command captures before discovery or support claims are added.
-- Classic Sunrise (`0x0A`, effect 12), Find (`0x0F`), native Auto (`0x07`),
-  native Pro (`0x10`) and scheduled effects (`0x11`) are documented by old
-  unlicensed source, but remain intentionally unexposed until captured or
-  hardware-verified.
+- AquaSky 3.0/FACEBD native Auto/Pro keys 114-122 are implemented from exact
+  FluvalConnect APK call sites. The codec and transport are covered by tests,
+  but the schedule path still needs a real AquaSky 3.0 hardware report; do not
+  describe it as hardware-verified yet. Scheduled effect key 123 remains
+  unexposed pending behavior validation.
+- Siena 2.0, Roma/Shaker 2.0, V&V, Reef Pro, and the other named fixtures remain
+  in scope where FluvalConnect assigns them to the implemented OLD, WIFI, or
+  MESH controller paths. Track fixture reports against those APK assignments;
+  do not invent a separate protocol without manufacturer evidence.
+- Classic native Auto (`0x07`) and Pro (`0x10`) are implemented from the
+  FluvalConnect APK and exposed through the transport-neutral native schedule
+  actions. Regular commands are hardware-verified on product `0x0103`; native
+  schedule behavior still needs a fixture report. Sunrise (`0x0A`, effect 12),
+  Find (`0x0F`), and scheduled effects (`0x11`) remain unexposed pending
+  behavior validation.
 
 ## Reporting a new bug
 

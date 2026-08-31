@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from custom_components.fluvalble.core import (
     LAMP_PROFILE_AQUASKY,
+    LAMP_PROFILE_AQUASKY3,
     LAMP_PROFILE_PLANT,
     LAMP_PROFILE_PLANT_PRO,
 )
@@ -35,6 +36,14 @@ def _make_device(name="AquaSky3.0_Test", model="AquaSky Bluetooth LED", **config
 
 def _mesh_client():
     return SimpleNamespace(raw_mesh=True, command_write_uuid="0000fff2-0000-1000-8000-00805f9b34fb")
+
+
+def _facebd_client():
+    return SimpleNamespace(
+        raw_facebd=True,
+        raw_mesh=False,
+        command_write_uuid="facebd03-7261-6262-6974-696f74626c65",
+    )
 
 
 def test_initial_values_include_all_channels():
@@ -106,10 +115,16 @@ def test_update_ble_keeps_mac_uppercase():
     assert device.conn_info["mac"] == "AA:BB:CC:DD:EE:FF"
 
 
-def test_aquasky_3_name_exposes_five_channels():
+def test_aquasky_3_name_exposes_four_rgbw_channels():
     device = _make_device(name="AquaSky3.0_2F3176", model="AquaSky 3.0 Bluetooth LED")
 
-    assert device.numbers() == NUMBERS
+    assert device.numbers() == AQUASKY_NUMBERS
+
+
+def test_aquasky_3_profile_exposes_four_rgbw_channels():
+    device = _make_device(lamp_profile=LAMP_PROFILE_AQUASKY3)
+
+    assert device.numbers() == AQUASKY_NUMBERS
 
 
 def test_clock_sync_flag_resets_on_disconnect():
@@ -620,6 +635,23 @@ def test_mesh_native_auto_schedule_sends_fixture_schedule_and_auto_mode():
     asyncio.run(_async_test_mesh_native_auto_schedule())
 
 
+def test_stopping_preview_reactivates_the_native_fixture_mode():
+    asyncio.run(_async_test_stopping_preview_reactivates_the_native_fixture_mode())
+
+
+async def _async_test_stopping_preview_reactivates_the_native_fixture_mode():
+    device = _make_device()
+    device.preview_restore_values = {"channel_1": 50}
+    device.preview_restore_mode = "professional"
+    device.async_select_option = AsyncMock(return_value=True)
+    device.async_set_channels = AsyncMock(return_value=True)
+
+    await device.async_stop_preview()
+
+    device.async_select_option.assert_awaited_once_with("mode", "professional")
+    device.async_set_channels.assert_not_awaited()
+
+
 async def _async_test_mesh_native_auto_schedule():
     device = _make_device(name="PlantPro_AABBCC", model="PlantPro_AABBCC")
     device.client = _mesh_client()
@@ -692,6 +724,76 @@ async def _async_test_mesh_native_pro_schedule():
         protocol.mesh_mode_packet(2),
     ]
     assert device.values["mode"] == "professional"
+
+
+def test_facebd_native_schedules_use_apk_cbor_and_four_channels():
+    asyncio.run(_async_test_facebd_native_schedules())
+
+
+async def _async_test_facebd_native_schedules():
+    device = _make_device(service_uuids=["facebd00-7261-6262-6974-696f74626c65"])
+    device.client = _facebd_client()
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_packets = AsyncMock(return_value=True)
+
+    assert await device.async_set_native_auto_schedule(
+        sunrise=(8, 0, 60),
+        sunset=(21, 0, 45),
+        sleep=(22, 30),
+        day_levels=[80, 70, 60, 50, 40],
+        night_levels=[0, 10, 0, 0, 99],
+    )
+    auto_packets = device._async_send_packets.await_args.args[0]
+    assert protocol.decode_cbor_map(auto_packets[0]) == {
+        114: [480, 540],
+        115: [1215, 1260],
+        116: 1350,
+        117: bytes([80, 70, 60, 50]),
+        118: bytes([0, 10, 0, 0]),
+    }
+    assert auto_packets[1] == protocol.wifi_mode_packet(1)
+
+    device._async_send_packets.reset_mock()
+    assert await device.async_set_native_pro_schedule(
+        [{"time": "08:00", "channel_1": 1, "channel_2": 2, "channel_3": 3, "channel_4": 4, "channel_5": 99}]
+    )
+    pro_packets = device._async_send_packets.await_args.args[0]
+    assert protocol.decode_cbor_map(pro_packets[0]) == {120: 1, 121: [480], 122: bytes([1, 2, 3, 4])}
+    assert pro_packets[1] == protocol.wifi_mode_packet(2)
+
+
+def test_classic_native_schedules_use_apk_commands():
+    asyncio.run(_async_test_classic_native_schedules())
+
+
+async def _async_test_classic_native_schedules():
+    device = _make_device(name="AquaSky2.0_Test", model="AquaSky 2.0 Bluetooth LED")
+    device.client = SimpleNamespace(
+        raw_facebd=False,
+        raw_mesh=False,
+        command_write_uuid="00001001-0000-1000-8000-00805f9b34fb",
+    )
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_packets = AsyncMock(return_value=True)
+
+    assert await device.async_set_native_auto_schedule(
+        sunrise=(8, 0, 60),
+        sunset=(21, 0, 45),
+        sleep=None,
+        day_levels=[80, 70, 60, 50],
+        night_levels=[0, 10, 0, 0],
+    )
+    auto_packets = device._async_send_packets.await_args.args[0]
+    assert auto_packets[0][0:2] == bytes((0x68, protocol.OLD_AUTO_SCHEDULE))
+    assert auto_packets[1] == protocol.old_mode_packet(1)
+
+    device._async_send_packets.reset_mock()
+    assert await device.async_set_native_pro_schedule(
+        [{"time": "08:00", "channel_1": 1, "channel_2": 2, "channel_3": 3, "channel_4": 4}]
+    )
+    pro_packets = device._async_send_packets.await_args.args[0]
+    assert pro_packets[0][0:2] == bytes((0x68, protocol.OLD_PRO_SCHEDULE))
+    assert pro_packets[1] == protocol.old_mode_packet(2)
 
 
 def test_mesh_status_populates_native_schedule_readback():
