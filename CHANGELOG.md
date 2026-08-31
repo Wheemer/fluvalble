@@ -5,6 +5,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- Restored explicit lamp-profile precedence after the upstream reconciliation so
+  four-channel AquaSky controllers cannot treat trailing status bytes as a
+  fifth physical channel.
+- Replaced disconnected Bleak clients instead of reconnecting the same object,
+  while resolving Home Assistant's latest local-adapter or ESPHome-proxy route
+  for each fresh connection.
+
+---
+
 ## [0.1.2] - 2026-08-30
 
 ### Fixed

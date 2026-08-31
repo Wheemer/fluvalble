@@ -119,6 +119,34 @@ async def _async_test_fresh_connection_retry_cycle():
     assert establish.await_args.kwargs["disconnected_callback"] == client._on_disconnected
 
 
+def test_disconnected_bleak_client_is_replaced_instead_of_reused():
+    asyncio.run(_async_test_disconnected_bleak_client_is_replaced_instead_of_reused())
+
+
+async def _async_test_disconnected_bleak_client_is_replaced_instead_of_reused():
+    original_device = MagicMock(address="AA:BB:CC:DD:EE:FF")
+    current_device = MagicMock(address="AA:BB:CC:DD:EE:FF")
+    client = Client(original_device, device_provider=lambda: current_device)
+    stale = SimpleNamespace(is_connected=False, connect=AsyncMock(), disconnect=AsyncMock())
+    fresh = SimpleNamespace(is_connected=True, start_notify=AsyncMock())
+    client.client = stale
+    client._resolve_characteristics = AsyncMock()
+    client._async_request_classic_mtu = AsyncMock()
+    client._async_classic_session_init = AsyncMock()
+
+    with patch(
+        "custom_components.fluvalble.core.client.establish_connection",
+        new=AsyncMock(return_value=fresh),
+    ) as establish:
+        result = await client._ensure_client()
+
+    assert result is fresh
+    stale.connect.assert_not_awaited()
+    stale.disconnect.assert_awaited_once()
+    establish.assert_awaited_once()
+    assert establish.await_args.args[1] is current_device
+
+
 def test_unexpected_persistent_disconnect_schedules_immediate_reconnect():
     status_callback = MagicMock()
     ble_device = MagicMock(address="AA:BB:CC:DD:EE:FF")

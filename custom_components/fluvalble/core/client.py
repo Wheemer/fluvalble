@@ -99,6 +99,7 @@ class Client:
         wire_dialect: str | None = None,
         channel_endian: str | None = None,
         profile_learned_callback: Callable[[str, str], Awaitable[None] | None] | None = None,
+        device_provider: Callable[[], BLEDevice | None] | None = None,
     ) -> None:
         """Initialize the client."""
         self.device = device
@@ -106,6 +107,7 @@ class Client:
         self.update_callback = update_callback
         self.ready_callback = ready_callback
         self.profile_learned_callback = profile_learned_callback
+        self.device_provider = device_provider
         self._ping_interval = ping_interval
         self._active_time = active_time
 
@@ -305,35 +307,16 @@ class Client:
             return self.client
 
         if self.client is not None:
-            # Reconnect an existing BleakClient instance first. This avoids the
-            # full establish_connection recreation path after ping-timeout
-            # disconnects, which noticeably reduces perceived wake-up time.
-            for attempt in range(1, CONNECT_RETRIES + 1):
-                try:
-                    connected = await self.client.connect(timeout=CONNECT_TIMEOUT)
-                    if connected:
-                        break
-                    raise BleakError("connect returned False")
-                except (TimeoutError, BleakError, EOFError) as err:
-                    self.last_error = f"reconnect attempt {attempt} failed: {type(err).__name__}: {err}"
-                    _LOGGER.debug("Fluval reconnect attempt %s failed", attempt, exc_info=err)
-                    if attempt < CONNECT_RETRIES:
-                        await asyncio.sleep(attempt)
-                    else:
-                        self.client = None
+            # Bleak clients are single-connection objects. Reusing one after a
+            # disconnect is unreliable, especially when HA changes the local
+            # adapter or ESPHome proxy route. Dispose of it and let
+            # bleak-retry-connector create a fresh client for this connection.
+            await self._safe_disconnect()
 
-            if self.client is not None and self.client.is_connected:
-                if self.command_write_uuid is None or not self.notify_uuids:
-                    await self._resolve_characteristics()
-                for uuid in self.notify_uuids:
-                    with contextlib.suppress(BleakError):
-                        await self.client.start_notify(uuid, self.notify_callback)
-                if not self.raw_facebd and not self.raw_mesh and not self._classic_session_ready:
-                    await self._async_classic_session_init()
-                if self.status_callback:
-                    self.status_callback(True)
-                self.last_error = None
-                return self.client
+        if self.device_provider is not None:
+            current_device = self.device_provider()
+            if current_device is not None:
+                self.device = current_device
 
         # bleak-retry-connector already owns its retry loop. Wrapping it in a
         # second three-attempt loop caused up to twelve attempts and made an

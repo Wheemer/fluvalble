@@ -4,7 +4,11 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from custom_components.fluvalble.core import LAMP_PROFILE_PLANT, LAMP_PROFILE_PLANT_PRO
+from custom_components.fluvalble.core import (
+    LAMP_PROFILE_AQUASKY,
+    LAMP_PROFILE_PLANT,
+    LAMP_PROFILE_PLANT_PRO,
+)
 from custom_components.fluvalble.core import encryption, protocol
 from custom_components.fluvalble.core.device import (
     AQUASKY_NUMBERS,
@@ -283,7 +287,7 @@ async def _async_test_mesh_native_weather_effect():
     assert device.values["mode"] == "manual"
 
 
-def test_product_0103_channel_hint_overrides_plant_profile():
+def test_explicit_lamp_profile_overrides_detected_channel_hint():
     device = _make_device(
         name="Fish Fluval LED",
         model="Bluetooth LED",
@@ -292,8 +296,44 @@ def test_product_0103_channel_hint_overrides_plant_profile():
     device.product_id = 0x0103
     device._channel_count_hint = protocol.channel_count_for_product_id(device.product_id)
 
+    assert device.numbers() != AQUASKY_NUMBERS
+    assert device.light_mode() == "rgb"
+
+
+def test_aquasky_profile_does_not_decode_trailing_status_bytes_as_channel_five():
+    device = _make_device(
+        name="AquaSky2.0_Test",
+        model="AquaSky 2.0 Bluetooth LED",
+        lamp_profile=LAMP_PROFILE_AQUASKY,
+    )
+    # The fifth word is deliberately non-zero. For an explicitly configured
+    # four-channel AquaSky it is trailing packet data, not a physical channel.
+    packet = bytearray(
+        [
+            0x68,
+            0x18,
+            0x00,
+            0x01,
+            0x00,
+            100,
+            0,
+            200,
+            0,
+            44,
+            1,
+            144,
+            1,
+            0xE8,
+            0x03,
+        ]
+    )
+
+    device.decode_update_packet(packet)
+
     assert device.numbers() == AQUASKY_NUMBERS
-    assert device.light_mode() == "rgbw"
+    assert device.values["channel_1"] == 10
+    assert device.values["channel_4"] == 40
+    assert device.values["channel_5"] == 0
 
 
 def test_stopping_effect_restores_previous_static_channels():
