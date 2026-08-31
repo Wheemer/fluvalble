@@ -265,6 +265,11 @@ def _stub_homeassistant():
         _attr_brightness = None
         _attr_color_mode = None
         _attr_supported_color_modes = None
+        _attr_rgb_color = None
+        _attr_rgbw_color = None
+        _attr_effect = None
+        _attr_effect_list = None
+        _attr_supported_features = 0
 
     ha_light = types.ModuleType("homeassistant.components.light")
     ha_light.LightEntity = _FakeLightEntity

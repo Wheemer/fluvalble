@@ -64,6 +64,8 @@ FluvalConnect also lists Siena 2.0, Roma 2.0, Shaker 2.0, V&V and other newer pr
 
 ### Option A: HACS (recommended)
 
+[![Open your Home Assistant instance and open this repository inside HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Wheemer&repository=fluvalble&category=integration)
+
 1. Ensure [HACS](https://hacs.xyz/) is installed.
 2. In HACS: **Integrations** → **⋮** → **Custom repositories**.
 3. Add: `https://github.com/Wheemer/fluvalble`
