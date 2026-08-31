@@ -3,7 +3,7 @@
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.components.light import ATTR_BRIGHTNESS
 
@@ -126,6 +126,51 @@ def test_downloadable_diagnostics_redact_identifiers_but_keep_protocol_fields():
     assert report["connection_info"]["service_uuids"] == ["0000fff0-0000-1000-8000-00805f9b34fb"]
     assert report["product_id"] == 259
     assert report["channel_count"] == 4
+
+
+def test_downloadable_diagnostics_do_not_touch_ble():
+    asyncio.run(_async_test_downloadable_diagnostics_do_not_touch_ble())
+
+
+async def _async_test_downloadable_diagnostics_do_not_touch_ble():
+    device = _make_device()
+    device.hass = None
+    client = MagicMock()
+    client.disconnect = AsyncMock()
+    client.request_state = AsyncMock()
+    client.command_write_uuid = "00001001-0000-1000-8000-00805f9b34fb"
+    client.notify_uuid = "00001002-0000-1000-8000-00805f9b34fb"
+    client.raw_facebd = False
+    client.raw_mesh = False
+    client.last_error = None
+    client.last_write_targets = []
+    client._classic_session_ready = True
+    client._classic_handshake_done = True
+    client.write_reg_uuid = None
+    client.read_reg_uuid = None
+    device.client = client
+    entry = SimpleNamespace(
+        entry_id="private-entry-id",
+        title="Kitchen Aquarium",
+        unique_id="AA:BB:CC:DD:EE:FF",
+        data={"mac": "AA:BB:CC:DD:EE:FF"},
+        options={"active_time": 0},
+        runtime_data=SimpleNamespace(device=device),
+    )
+
+    with patch(
+        "custom_components.fluvalble.core.device.BleakScanner.find_device_by_address",
+        new=AsyncMock(),
+    ) as scanner:
+        report = await diagnostics._build_report(entry)
+
+    client.disconnect.assert_not_awaited()
+    client.request_state.assert_not_awaited()
+    scanner.assert_not_awaited()
+    assert report["entry"]["title"] == diagnostics.REDACTED
+    assert report["entry"]["unique_id"] == diagnostics.REDACTED
+    assert report["entry"]["data"]["mac"] == diagnostics.REDACTED
+    assert report["product_id"] == device.product_id
 
 
 def test_duplicate_device_registry_entries_are_merged_safely(monkeypatch):

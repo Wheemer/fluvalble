@@ -166,7 +166,7 @@ After setup you'll see one device with entities like:
 | **Binary sensor** | Reachable | Lamp seen recently over BLE. |
 | **Sensors** | Signal / Last seen | Raw advertisement RSSI and the last successful BLE activity time. RSSI includes the time of its last advertisement as an attribute. |
 
-Redacted downloadable diagnostics are available from the Home Assistant device page. They retain protocol/profile information while removing Bluetooth addresses, advertised names, manufacturer payloads and registry identifiers.
+Redacted downloadable diagnostics are available from the Home Assistant device page. They retain protocol/profile information while removing Bluetooth addresses, advertised names, manufacturer payloads and registry identifiers. The report is a runtime snapshot and does not scan, disconnect, reconnect, request state, or send commands to the fixture.
 
 Home Assistant creates entity IDs from the device and entity names, not directly
 from the Bluetooth address. The examples below use placeholders such as
