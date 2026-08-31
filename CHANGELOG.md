@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   finite 30-600 second idle windows an explicit configuration alternative.
 
 ### Fixed
+- Remove stale registry entries for all retired diagnostic controls, including
+  the former LED channel-test button.
 - Corrected AquaSky 3.0/FACEBD to its four-channel RGBW profile and retained the
   last known channel state while controllers report an Automatic or
   Professional native mode.

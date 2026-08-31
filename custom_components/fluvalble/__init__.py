@@ -77,7 +77,11 @@ SCHEDULE_POINT_FIELDS = {"time", *SCHEDULE_CHANNELS}
 NATIVE_AUTO_TIME_FIELDS = {"hour", "minute"}
 NATIVE_AUTO_TIME_RAMP_FIELDS = {*NATIVE_AUTO_TIME_FIELDS, "ramp"}
 NATIVE_LEVEL_FIELDS = tuple(f"channel_{index}" for index in range(1, 6))
-LEGACY_ENTITY_UNIQUE_ID_SUFFIXES = ("_diagnostics", "_refresh_diagnostics")
+LEGACY_ENTITY_UNIQUE_ID_SUFFIXES = (
+    "_diagnostics",
+    "_refresh_diagnostics",
+    "_test_led_channels",
+)
 RETIRED_ENTITY_DOMAINS = frozenset({"number", "switch"})
 
 
