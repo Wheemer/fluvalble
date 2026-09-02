@@ -23,7 +23,30 @@ def test_decode_old_manual_state_matches_apk_layout():
         "power": True,
         "effect_id": 11,
         "channels": [100, 200, 300, 400, 500],
+        "presets": [
+            [1, 2, 3, 4, 5],
+            [6, 7, 8, 9, 10],
+            [11, 12, 13, 14, 15],
+            [16, 17, 18, 19, 20],
+        ],
     }
+
+
+def test_decode_old_manual_state_preserves_four_channel_presets():
+    body = bytearray((0, 1, 0))
+    for value in (1000, 750, 500, 250):
+        body.extend((value & 0xFF, value >> 8))
+    body.extend((10, 20, 30, 40, 11, 21, 31, 41, 12, 22, 32, 42, 13, 23, 33, 43))
+
+    decoded = protocol.decode_old_state_packet(_old_state_packet(body), channel_count=4)
+
+    assert decoded is not None
+    assert decoded["presets"] == [
+        [10, 20, 30, 40],
+        [11, 21, 31, 41],
+        [12, 22, 32, 42],
+        [13, 23, 33, 43],
+    ]
 
 
 def test_decode_old_state_accepts_only_apk_auto_and_pro_lengths():
@@ -283,6 +306,25 @@ def test_old_all_zone_packet_clamps_and_encodes_five_channels():
     packet = protocol.old_all_zone_packet([-1, 20, 30, 40, 101])
 
     assert packet == bytes.fromhex("68 04 00 00 00 C8 01 2C 01 90 03 E8 F3")
+
+
+@pytest.mark.parametrize(
+    ("slot_index", "expected"),
+    [
+        (0, "68 06 00 6E"),
+        (1, "68 06 01 6F"),
+        (2, "68 06 02 6C"),
+        (3, "68 06 03 6D"),
+    ],
+)
+def test_old_save_manual_preset_packet_matches_apk_slots(slot_index, expected):
+    assert protocol.old_save_manual_preset_packet(slot_index) == bytes.fromhex(expected)
+
+
+@pytest.mark.parametrize("slot_index", [-1, 4, True, 1.5])
+def test_old_save_manual_preset_packet_rejects_invalid_slots(slot_index):
+    with pytest.raises(ValueError, match="between 0 and 3"):
+        protocol.old_save_manual_preset_packet(slot_index)
 
 
 def test_old_clock_packet_shape():

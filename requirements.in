@@ -8,6 +8,6 @@ voluptuous==0.16.0
 ruff==0.16.5
 mypy==2.3.1
 pre-commit==4.6.2
-uv==0.12.7
+uv==0.12.9
 pillow==12.3.0
 cairosvg==2.9.0
