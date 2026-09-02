@@ -381,6 +381,8 @@ def test_reported_firmware_updates_standard_device_registry_info():
 
     registry.async_get_device.assert_called_once_with(identifiers={("fluvalble", "AA:BB:CC:DD:EE:FF")})
     registry.async_update_device.assert_called_once_with("device_1", sw_version="14")
+
+
 def test_product_identity_updates_config_entry_and_device_registry():
     import custom_components.fluvalble as integration
 
