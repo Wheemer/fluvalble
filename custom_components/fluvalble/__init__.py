@@ -66,6 +66,22 @@ def _runtime_device(entry_data: Any) -> Device | None:
     return None
 
 
+def _active_time_from_options(options: dict[str, Any]) -> int:
+    """Resolve active time from the numeric option or the short-lived checkbox."""
+    if CONF_ACTIVE_TIME in options:
+        return options[CONF_ACTIVE_TIME]
+    if options.get("always_connected") is True:
+        return 0
+    return options.get("idle_timeout", DEFAULT_ACTIVE_TIME)
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Move version-one entries forward without changing their options."""
+    if entry.version < 2:
+        hass.config_entries.async_update_entry(entry, version=2)
+    return True
+
+
 @callback
 def _sync_firmware_version_to_device_registry(hass: HomeAssistant, device: Device) -> None:
     """Publish fixture-reported firmware through standard HA device info."""
@@ -148,6 +164,7 @@ RETIRED_DIAGNOSTIC_SUFFIXES = (
     "_diagnostics",
     "_refresh_diagnostics",
     "_test_led_channels",
+    "_advertisement_source",
 )
 RETIRED_ENTITY_DOMAINS = frozenset({Platform.NUMBER.value})
 RETIRED_SWITCH_SUFFIXES = ("_led_on_off",)
@@ -465,7 +482,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
         """Instantiate Device and add entities for any platforms that are already loaded."""
         _LOGGER.debug("Creating device for %s", mac)
         ping_interval = entry.options.get(CONF_PING_INTERVAL, DEFAULT_PING_INTERVAL)
-        active_time = entry.options.get(CONF_ACTIVE_TIME, DEFAULT_ACTIVE_TIME)
+        active_time = _active_time_from_options(dict(entry.options))
         device = Device(
             entry.title,
             service_info.device,

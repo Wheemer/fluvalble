@@ -237,7 +237,7 @@ After setup you'll see one device with entities like:
 | **Select** | Mode | Manual / Automatic / Professional. |
 | **Button** | Identify | Runs the fixture's native FluvalConnect Find command so the physical light identifies itself. |
 | **Binary sensor** | Reachable | Fixture seen recently over BLE; raw GATT connection state remains available as an attribute. |
-| **Sensors** | Advertisement signal strength / Bluetooth advertisement source / Bluetooth connection source / Last seen | Separates the latest advertisement's RSSI and scanner from the adapter or proxy that established the active GATT connection. |
+| **Sensors** | Signal strength / Source / Last seen | Signal strength is an optional diagnostic, disabled by default, containing the latest connectable advertisement sample and its `last_updated` time; persistent GATT sessions do not provide live RSSI. Source shows the active route's friendly name. Detailed scanner addresses remain in downloadable diagnostics. |
 | **Button** | Sync Clock | Synchronizes the fixture's real-time clock with Home Assistant. |
 | **Switch** | Daylight saving time | FACEBD-only fixture DST setting, available after confirmed controller readback. |
 
@@ -318,7 +318,7 @@ Replace `aabbccddeeff` with your device's MAC (without colons), and `person.you`
 | **Cannot connect / no entities** | Confirm the light is on and in BLE range. Check that HA has Bluetooth enabled and that the adapter can see other BLE devices. Verify the MAC address (no typos, correct format AA:BB:CC:DD:EE:FF). |
 | **My light isn't in the dropdown** | Ensure the light is on and advertising. Use "My device isn't in the list" and enter the MAC manually (from phone Bluetooth settings or the Fluval app). |
 | **Lamp connected but doesn't respond to actions** | Try the Fluval app first to confirm the light works. If the app works but HA doesn't, open an issue with your model and HA logs. |
-| **ESPHome proxy is online but commands are unreliable** | Compare Bluetooth connection source with Bluetooth advertisement source. A weak advertisement from another scanner does not mean that scanner owns the GATT connection. Check the active proxy's Wi-Fi signal and scan settings. The integration asks HA for the best connectable route on reconnect; no adapter needs to be disabled manually. |
+| **ESPHome proxy is online but commands are unreliable** | Check Bluetooth source for the adapter or proxy that owns the active connection, then check that proxy's Wi-Fi signal and scan settings. The integration asks HA for the best connectable route on reconnect; no adapter needs to be disabled manually. |
 | **Light entity doesn't turn the fixture on/off** | Ensure the light model uses the same BLE command set. Try toggling once from the Fluval app, then again from HA. Restart HA and retry. |
 | **Entities show "unavailable"** | The light may be out of range or off. Move the light or HA adapter closer; check Reachable, Last seen, and RSSI. An idle GATT disconnect is expected when a finite active connection window is configured. |
 | **Colour or mode doesn't update** | Some firmware reports only its physical channel levels. Plant/Marine RGB is therefore an approximation when the colour was changed outside Home Assistant. |
@@ -337,8 +337,9 @@ The integration uses Home Assistant's Bluetooth support to connect to the Fluval
 - A keep-alive loop pings the light every 10 seconds to maintain the connection and flush any queued commands.
 - Persistent mode (`0`) keeps the session open and immediately starts one serialized reconnect cycle if the link drops.
 - Finite mode cleanly closes the connection after the configured idle window; the default remains 2 minutes.
-- Reachable remains on for five minutes after an advertisement, successful connection, or successful command. Advertisement signal strength comes only from advertisements and identifies that advertisement's scanner; it is not connection-route RSSI.
-- Bluetooth connection source snapshots the adapter or proxy confirmed by Home Assistant's connected GATT client after setup succeeds. Bluetooth advertisement source continues following the scanner that supplied the latest advertisement, so the two sources may legitimately differ.
+- Reachable remains on for five minutes after an advertisement, successful connection, or successful command. Signal strength is captured from the adapter or proxy selected for GATT and remains visible with its sample timestamp while connected. Fluval controllers normally stop advertising during GATT, so it updates again when that route provides a new sample rather than being overwritten by a different scanner.
+- Source shows only the friendly name of the adapter or proxy confirmed by Home Assistant's connected GATT client. Per-scanner advertisement routing and addresses remain available in downloadable diagnostics instead of separate device-page entities.
+- Last seen is event-driven: advertisements, connection establishment, and successful commands update it. It is not advanced by an idle connection loop that performs no verifiable GATT operation.
 - Each reconnect uses a fresh BLE client and the current HA-selected route.
 
 ---

@@ -76,9 +76,26 @@ OPTIONS_SCHEMA = vol.Schema(
             int,
             vol.Range(min=5, max=60),
         ),
-        vol.Optional(CONF_ACTIVE_TIME, default=DEFAULT_ACTIVE_TIME): validate_active_time,
+        # Keep this schema serializable by Home Assistant's flow frontend.
+        # The 1-29 gap is rejected explicitly in async_step_init below.
+        vol.Optional(CONF_ACTIVE_TIME, default=DEFAULT_ACTIVE_TIME): vol.All(
+            int,
+            vol.Range(min=0, max=600),
+        ),
     }
 )
+
+
+def _options_for_form(options: dict[str, Any]) -> dict[str, Any]:
+    """Return form values, translating the short-lived checkbox options."""
+    active_time = options.get(CONF_ACTIVE_TIME)
+    if active_time is None:
+        active_time = 0 if options.get("always_connected") is True else options.get("idle_timeout", DEFAULT_ACTIVE_TIME)
+    return {
+        CONF_LAMP_PROFILE: options.get(CONF_LAMP_PROFILE, DEFAULT_LAMP_PROFILE),
+        CONF_PING_INTERVAL: options.get(CONF_PING_INTERVAL, DEFAULT_PING_INTERVAL),
+        CONF_ACTIVE_TIME: active_time,
+    }
 
 
 def normalize_mac(mac: str) -> str:
@@ -183,7 +200,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any], ble_name: st
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Fluval Aquarium LED."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self) -> None:
         super().__init__()
@@ -351,13 +368,29 @@ class OptionsFlowHandler(OptionsFlowBase):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Show and handle the options form."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            try:
+                validate_active_time(user_input[CONF_ACTIVE_TIME])
+            except vol.Invalid:
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=self.add_suggested_values_to_schema(
+                        OPTIONS_SCHEMA,
+                        user_input,
+                    ),
+                    errors={CONF_ACTIVE_TIME: "invalid_active_time"},
+                )
+            else:
+                options = dict(self.config_entry.options)
+                options.pop("always_connected", None)
+                options.pop("idle_timeout", None)
+                options.update(user_input)
+                return self.async_create_entry(title="", data=options)
 
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
                 OPTIONS_SCHEMA,
-                self.config_entry.options,
+                _options_for_form(dict(self.config_entry.options)),
             ),
         )
 

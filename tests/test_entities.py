@@ -61,7 +61,7 @@ def test_create_entities_for_platforms():
     mode_entities = select.create_entities(device)
     assert len(mode_entities) == 1
     assert mode_entities[0].attr == "mode"
-    assert len(sensor.create_entities(device)) == 4
+    assert len(sensor.create_entities(device)) == 3
     assert len(button.create_entities(device)) == 2
     assert len(binary_sensor.create_entities(device)) == 1
     assert len(light.create_entities(device)) == 1
@@ -138,30 +138,36 @@ def test_diagnostic_entities_update_from_device_attributes():
     rssi = sensor.FluvalSensor(device, "rssi")
     last_seen = sensor.FluvalSensor(device, "last_seen")
     connection_source = sensor.FluvalSensor(device, "active_connection_source")
-    advertisement_source = sensor.FluvalSensor(device, "advertisement_source")
+
+    assert rssi._attr_entity_registry_enabled_default is False
 
     connection.internal_update()
     rssi.internal_update()
     last_seen.internal_update()
     connection_source.internal_update()
-    advertisement_source.internal_update()
 
     assert connection._attr_is_on is True
+    assert rssi._attr_available is True
     assert rssi._attr_native_value == -70
     assert rssi._attr_state_class.value == "measurement"
     assert rssi._attr_extra_state_attributes == {
-        "source_name": "Aquarium USB adapter",
-        "source_address": "00:11:22:33:44:55",
-        "source_type": "usb",
-        "last_advertisement": device.conn_info["rssi_updated_at"],
         "last_updated": device.conn_info["rssi_updated_at"],
     }
     assert last_seen._attr_native_value == device.conn_info["last_seen"]
     assert connection_source._attr_native_value == "fish"
+    assert connection_source._attr_icon == "mdi:bluetooth"
+    assert "source_address" not in connection_source._attr_extra_state_attributes
     assert connection_source._attr_extra_state_attributes["source_type"] == "remote"
     assert connection_source._attr_extra_state_attributes["gatt_connected"] is True
-    assert advertisement_source._attr_native_value == "Aquarium USB adapter"
-    assert advertisement_source._attr_extra_state_attributes["source_type"] == "usb"
+
+    device.connected = False
+    rssi.internal_update()
+    assert rssi._attr_available is True
+    assert rssi._attr_native_value == -70
+    assert rssi._attr_state_class.value == "measurement"
+    assert rssi._attr_extra_state_attributes == {
+        "last_updated": device.conn_info["rssi_updated_at"],
+    }
 
 
 def test_downloadable_diagnostics_redact_identifiers_but_keep_protocol_fields():

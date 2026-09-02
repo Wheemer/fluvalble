@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+- Made RSSI an optional last-advertisement diagnostic that is disabled by
+  default for new entities, following Home Assistant's entity guidance.
+- Simplified Bluetooth diagnostics to one friendly-name-only Bluetooth source
+  entity for the active GATT route, restored the existing Signal strength name,
+  and retired the redundant advertisement-source entity. Per-scanner routing
+  details remain available in downloadable diagnostics.
+- Bound Signal strength to the scanner that established the active GATT route;
+  advertisements from distant scanners can no longer overwrite it while the
+  fixture is connected. If HA cannot provide that route's cached advertisement,
+  the sensor becomes unavailable instead of displaying an unrelated RSSI.
+- Kept the selected route's most recent RSSI visible while GATT is active and
+  exposed its sample timestamp, while preventing advertisements from other
+  scanners from replacing it. The connection-source entity is now the concise
+  Source with a Bluetooth icon.
 - Hardened Home Assistant setup and Bluetooth discovery against malformed
   advertisements, and removed the empty address suffix from the fallback name
   shown when discovery details are unavailable.

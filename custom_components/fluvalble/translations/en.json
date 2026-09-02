@@ -31,6 +31,9 @@
     }
   },
   "options": {
+    "error": {
+      "invalid_active_time": "Enter 0 for a persistent connection, or a value from 30 to 600 seconds."
+    },
     "step": {
       "init": {
         "title": "Connection options",
@@ -83,16 +86,13 @@
     },
     "sensor": {
       "rssi": {
-        "name": "Advertisement signal strength"
+        "name": "Signal strength"
       },
       "last_seen": {
         "name": "Last seen"
       },
       "active_connection_source": {
-        "name": "Bluetooth connection source"
-      },
-      "advertisement_source": {
-        "name": "Bluetooth advertisement source"
+        "name": "Source"
       }
     }
   }

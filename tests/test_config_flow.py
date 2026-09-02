@@ -19,6 +19,7 @@ from homeassistant import config_entries
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from custom_components.fluvalble import config_flow as config_flow_module
+from custom_components.fluvalble import _active_time_from_options, async_migrate_entry
 from custom_components.fluvalble.config_flow import (
     MANUAL_ENTRY,
     ConfigFlow,
@@ -28,6 +29,7 @@ from custom_components.fluvalble.config_flow import (
     _format_bluetooth_mac,
     _get_discovered_devices,
     _is_likely_fluval,
+    _options_for_form,
     normalize_mac,
     unique_id_from_mac,
     validate_active_time,
@@ -95,13 +97,21 @@ def test_options_flow_uses_saved_values_as_suggestions():
 
     assert result == {"type": "form"}
     flow.add_suggested_values_to_schema.assert_called_once()
-    assert flow.add_suggested_values_to_schema.call_args.args[1] is options
+    assert flow.add_suggested_values_to_schema.call_args.args[1] == {
+        "lamp_profile": "plant",
+        "ping_interval": 15,
+        "active_time": 0,
+    }
     flow.async_show_form.assert_called_once_with(step_id="init", data_schema=suggested_schema)
 
 
 def test_options_flow_submission_is_owned_by_reload_helper():
-    """The handler only creates options; its HA base class owns the reload."""
+    """The handler preserves internal options; its HA base class owns the reload."""
     flow = OptionsFlowHandler()
+    flow.config_entry.options = {
+        "active_time": 0,
+        "wire_dialect": "rand0",
+    }
     flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
     submitted = {
         "lamp_profile": "auto",
@@ -112,7 +122,32 @@ def test_options_flow_submission_is_owned_by_reload_helper():
     result = asyncio.run(flow.async_step_init(submitted))
 
     assert result == {"type": "create_entry"}
-    flow.async_create_entry.assert_called_once_with(title="", data=submitted)
+    flow.async_create_entry.assert_called_once_with(
+        title="",
+        data={**submitted, "wire_dialect": "rand0"},
+    )
+
+
+def test_options_flow_rejects_connection_windows_between_one_and_twenty_nine():
+    """The serializable numeric schema retains the documented validation gap."""
+    flow = OptionsFlowHandler()
+    suggested_schema = object()
+    flow.add_suggested_values_to_schema = MagicMock(return_value=suggested_schema)
+    flow.async_show_form = MagicMock(return_value={"type": "form"})
+    submitted = {
+        "lamp_profile": "auto",
+        "ping_interval": 10,
+        "active_time": 1,
+    }
+
+    result = asyncio.run(flow.async_step_init(submitted))
+
+    assert result == {"type": "form"}
+    flow.async_show_form.assert_called_once_with(
+        step_id="init",
+        data_schema=suggested_schema,
+        errors={"active_time": "invalid_active_time"},
+    )
 
 
 class TestActiveTimeSchema:
@@ -129,6 +164,65 @@ class TestActiveTimeSchema:
     def test_rejects_non_integer_values(self, value):
         with pytest.raises(vol.Invalid, match="must be an integer"):
             validate_active_time(value)
+
+    def test_short_lived_checkbox_options_are_translated_for_form(self):
+        assert _options_for_form(
+            {
+                "lamp_profile": "marine",
+                "ping_interval": 20,
+                "always_connected": False,
+                "idle_timeout": 300,
+            }
+        ) == {
+            "lamp_profile": "marine",
+            "ping_interval": 20,
+            "active_time": 300,
+        }
+
+    def test_short_lived_always_connected_option_becomes_zero(self):
+        assert _options_for_form(
+            {
+                "lamp_profile": "aquasky",
+                "ping_interval": 10,
+                "always_connected": True,
+                "idle_timeout": 120,
+            }
+        ) == {
+            "lamp_profile": "aquasky",
+            "ping_interval": 10,
+            "active_time": 0,
+        }
+
+    @pytest.mark.parametrize(
+        ("options", "expected"),
+        [
+            ({"active_time": 0}, 0),
+            ({"active_time": 180}, 180),
+            ({"always_connected": True, "idle_timeout": 120}, 0),
+            ({"always_connected": False, "idle_timeout": 300}, 300),
+            ({}, 120),
+        ],
+    )
+    def test_runtime_accepts_numeric_and_short_lived_options(self, options, expected):
+        assert _active_time_from_options(options) == expected
+
+
+def test_version_one_entry_migrates_without_changing_options():
+    update_entry = MagicMock()
+    hass = SimpleNamespace(config_entries=SimpleNamespace(async_update_entry=update_entry))
+    entry = SimpleNamespace(version=1, options={"active_time": 0})
+
+    assert asyncio.run(async_migrate_entry(hass, entry)) is True
+    update_entry.assert_called_once_with(entry, version=2)
+
+
+def test_version_two_entry_requires_no_migration():
+    update_entry = MagicMock()
+    hass = SimpleNamespace(config_entries=SimpleNamespace(async_update_entry=update_entry))
+    entry = SimpleNamespace(version=2, options={"always_connected": True})
+
+    assert asyncio.run(async_migrate_entry(hass, entry)) is True
+    update_entry.assert_not_called()
 
 
 class TestNormalizeMac:
