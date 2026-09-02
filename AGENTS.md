@@ -13,10 +13,8 @@ working in this repository. Read this before you start changing code.
 - **Test framework:** `pytest` + `pytest-asyncio`.
 - **Lint/format:** `ruff` (lint + format). Mypy runs in CI as a soft
   check (not yet gating).
-- **Coverage floor:** 33% (configured in `pyproject.toml`). The floor
-  is intentionally low to start — most of the platform/entity code is
-  exercised via HA's own test harness rather than unit tests. A follow-up
-  PR should add entity-platform tests and raise the floor to ~70%.
+- **Coverage floor:** 65% (configured in `pyproject.toml`). Current branch
+  coverage is roughly 70%; raise the floor incrementally as tests improve.
 - **Branch model:** focused feature/fix/release branches → `main`. Direct pushes
   to `main` are not part of the release workflow.
 
