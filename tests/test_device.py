@@ -32,6 +32,25 @@ def _make_device(name="AquaSky3.0_Test", model="AquaSky Bluetooth LED", **config
     )
 
 
+def test_apk_product_identity_drives_auto_model_and_channel_count():
+    aquasky = _make_device(
+        name="Generic Light",
+        model="Bluetooth LED",
+        product_id=328,
+    )
+    plant = _make_device(
+        name="Generic Light",
+        model="Bluetooth LED",
+        product_id=305,
+    )
+
+    assert aquasky.model_name == "Aquasky 750mm"
+    assert aquasky.numbers() == AQUASKY_NUMBERS
+    assert plant.model_name == "Fresh & Plant 500mm"
+    assert plant.numbers() == NUMBERS
+    assert plant.entity_name("channel_1") == "Pink"
+
+
 def test_connection_attribute_uses_recent_activity_or_live_gatt():
     device = _make_device()
     device.connected = False
@@ -140,9 +159,23 @@ def test_non_aquasky_facebd_identity_does_not_expose_weather_effects():
 
 
 def test_plant_pro_identity_exposes_only_plant_pro_effects():
-    device = _make_device(name="PlantPro_AABBCC", model="Plant Pro 4.0 Bluetooth LED")
+    device = _make_device(name="PlantPro_AABBCC", model="Fluval Plant PRO LED")
 
     assert device.effect_list() == ["None", *PLANT_PRO_EFFECTS]
+
+
+def test_product_id_drives_apk_effect_catalogue():
+    no_effects = _make_device(product_id=305, service_uuids=["00001002-0000-1000-8000-00805f9b34fb"])
+    aquasky = _make_device(product_id=328)
+    plant_4 = _make_device(product_id=545)
+    reef_4 = _make_device(product_id=546)
+    roma_shaker = _make_device(product_id=564)
+
+    assert no_effects.effect_list() == []
+    assert aquasky.effect_list() == ["None", *WEATHER_EFFECTS]
+    assert plant_4.effect_list() == ["None", *PLANT_PRO_EFFECTS]
+    assert reef_4.effect_list() == ["None", *PLANT_PRO_EFFECTS]
+    assert roma_shaker.effect_list() == ["None", *WEATHER_EFFECTS]
 
 
 def test_native_weather_effect_uses_apk_packet():
@@ -365,16 +398,39 @@ def test_plant_name_exposes_five_channels():
     assert device.entity_name("channel_3") == "Cold White"
 
 
-def test_plant_pro_exposes_five_channel_rgb_spectrum_with_reference_labels():
+def test_plant_pro_exposes_apk_five_channel_plant_spectrum():
     device = _make_device(
         name="PlantPro_AABBCC",
-        model="Plant Pro 4.0 Bluetooth LED",
+        model="Fluval Plant PRO LED",
     )
 
     assert device.numbers() == NUMBERS
     assert device.light_mode() == "rgb"
     assert device.entity_name("channel_1") == CHANNEL_NAMES_PLANT_PRO["channel_1"]
     assert device.entity_name("channel_5") == CHANNEL_NAMES_PLANT_PRO["channel_5"]
+
+
+def test_plant_pro_and_plant_4_keep_separate_models_with_same_apk_channel_order():
+    plant_pro = _make_device(product_id=386)
+    plant_4 = _make_device(product_id=545)
+
+    assert plant_pro.model_name == "Fluval Plant PRO LED"
+    assert plant_4.model_name == "Fluval Plant 4.0 LED"
+    assert plant_pro.model_name != plant_4.model_name
+    assert [plant_pro.entity_name(channel) for channel in NUMBERS] == [
+        "Pink",
+        "Blue",
+        "Cold White",
+        "White",
+        "Warm White",
+    ]
+    assert [plant_4.entity_name(channel) for channel in NUMBERS] == [
+        "Pink",
+        "Blue",
+        "Cold White",
+        "White",
+        "Warm White",
+    ]
 
 
 def test_aquasky_uses_rgbw_and_maps_channels_at_requested_brightness():

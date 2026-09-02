@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Added APK-backed product-ID detection for Fluval advertisements. Classic
+  fixtures now reconstruct the split ASCII product ID correctly (rather than
+  mistaking the following firmware bytes for it), use the exact APK model name,
+  and select the APK channel count when the lamp profile is Auto. Product
+  identity is persisted for existing entries and now selects the APK's 0-, 4-,
+  or 11-effect catalogue. Strict product-aware discovery covers the APK's
+  classic ASCII prefixes and current binary FFF0 advertisements without
+  accepting generic mesh devices.
 - Added locally reported fixture firmware versions to standard Home Assistant
   device information for AquaSky 3.0/FACEBD and Plant Pro/MESH controllers.
 - Added a FACEBD-only Daylight saving time configuration switch backed by
@@ -39,6 +47,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   with immediate serialized recovery after unexpected disconnects.
 
 ### Changed
+- Reduced classic encrypted BLE command pacing from 750 ms to the
+  FluvalConnect APK's 200 ms affair-queue interval. FACEBD and Plant Pro/SPP
+  retain their existing timing.
 - Corrected fixture-native Professional schedule validation to match the
   FluvalConnect APK: 4–10 points for classic/OLD controllers and 4–12 for
   AquaSky 3.0/FACEBD and Plant Pro/MESH controllers.
