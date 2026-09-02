@@ -47,7 +47,10 @@ _LOGGER = logging.getLogger(__name__)
 REACHABLE_SECONDS = 300
 
 NUMBERS = ["channel_1", "channel_2", "channel_3", "channel_4", "channel_5"]
-SELECTS = ["mode", "schedule_mode"]
+# FluvalConnect exposes Manual, Auto, and Professional as one operating-mode
+# control for every supported light family. Schedule editors configure those
+# modes; they are not a second fixture mode selector.
+SELECTS = ["mode"]
 SENSORS = ["rssi", "last_seen"]
 AQUASKY_NUMBERS = ["channel_1", "channel_2", "channel_3", "channel_4"]
 CHANNEL_NAMES_AQUASKY = {
@@ -84,7 +87,6 @@ CHANNEL_NAMES_PLANT_PRO = {
 CHANNEL_NAMES = CHANNEL_NAMES_AQUASKY
 MODES = ["manual", "automatic", "professional"]
 MODE_TO_CODE = {mode: index for index, mode in enumerate(MODES)}
-SCHEDULE_MODES = ["manual", "auto"]
 DIAGNOSTIC_UPDATE_INTERVAL = 5
 BLE_LOOKUP_TIMEOUT = 10
 BLE_LOOKUP_RETRIES = 3
@@ -340,6 +342,12 @@ class Device:
             last_seen = last_seen.replace(tzinfo=UTC)
         return (datetime.now(UTC) - last_seen).total_seconds() <= REACHABLE_SECONDS
 
+    def command_error_message(self) -> str:
+        """Return the most useful available BLE command error."""
+        if self.client is not None and self.client.last_error:
+            return self.client.last_error
+        return self.diagnostics.get("last_error") or "Fluval BLE command failed"
+
     def _notify_diagnostics_throttled(self):
         """Notify diagnostic entities at most once per interval."""
         now = monotonic()
@@ -410,7 +418,9 @@ class Device:
         return list(NUMBERS)
 
     def _resolved_channel_count(self) -> int:
-        """Return 4 or 5 channels from profile, packet hint, or name heuristics."""
+        """Return the APK channel count, with fallbacks for unidentified fixtures."""
+        if (product := product_from_id(self.product_id)) is not None:
+            return product.channel_count
         profile = (self.lamp_profile or LAMP_PROFILE_AUTO).lower()
         if profile == LAMP_PROFILE_AQUASKY:
             return 4
@@ -418,8 +428,6 @@ class Device:
             return 4
         if profile in (LAMP_PROFILE_PLANT, LAMP_PROFILE_PLANT_PRO, LAMP_PROFILE_MARINE):
             return 5
-        if (product := product_from_id(self.product_id)) is not None:
-            return product.channel_count
         if self._channel_count_hint in (4, 5):
             return self._channel_count_hint
         if self.facebd:
@@ -440,6 +448,14 @@ class Device:
 
     def _channel_labels(self) -> dict[str, str]:
         """Return channel labels for the active lamp profile."""
+        if (product := product_from_id(self.product_id)) is not None:
+            if product.spectrum == "plant":
+                return CHANNEL_NAMES_PLANT
+            if product.spectrum == "rgbw":
+                return CHANNEL_NAMES_AQUASKY
+            if product.spectrum == "marine":
+                return CHANNEL_NAMES_MARINE
+
         profile = (self.lamp_profile or LAMP_PROFILE_AUTO).lower()
         if profile == LAMP_PROFILE_PLANT_PRO:
             return CHANNEL_NAMES_PLANT_PRO
@@ -449,13 +465,6 @@ class Device:
             return CHANNEL_NAMES_MARINE
         if profile in (LAMP_PROFILE_AQUASKY, LAMP_PROFILE_AQUASKY3):
             return CHANNEL_NAMES_AQUASKY
-        if (product := product_from_id(self.product_id)) is not None:
-            if product.spectrum == "plant":
-                return CHANNEL_NAMES_PLANT
-            if product.spectrum == "rgbw":
-                return CHANNEL_NAMES_AQUASKY
-            if product.spectrum == "marine":
-                return CHANNEL_NAMES_MARINE
         model_l = (self.model or "").lower()
         name_l = (self.name or "").lower()
         if "marine" in model_l or "marine" in name_l or "reef" in model_l or "reef" in name_l:
@@ -680,8 +689,14 @@ class Device:
     def supports_classic_effects(self) -> bool:
         """Return whether available BLE evidence identifies a classic controller."""
         product = product_from_id(self.product_id)
-        if product is not None and product.native_effect_count != 11:
-            return False
+        if product is not None:
+            if product.native_effect_count != 11:
+                return False
+        else:
+            profile = (self.lamp_profile or LAMP_PROFILE_AUTO).lower()
+            identity = f"{self.name} {self.model}".lower().replace(" ", "")
+            if profile not in (LAMP_PROFILE_AQUASKY, LAMP_PROFILE_AQUASKY3) and "aquasky" not in identity:
+                return False
         if self.client is not None and self.client.command_write_uuid:
             return self.client.command_write_uuid.lower().startswith("00001001")
 
@@ -720,8 +735,6 @@ class Device:
         product = product_from_id(self.product_id)
         if product is not None:
             return product.native_effect_count == 4
-        if self._uses_plant_pro_protocol():
-            return True
         if self.lamp_profile == LAMP_PROFILE_PLANT_PRO:
             return True
         identity = f"{self.name} {self.model}".lower().replace(" ", "")
@@ -1079,8 +1092,6 @@ class Device:
             return Attribute(min=0, max=100, step=1, value=self.values[attr])
         if attr == "mode":
             return Attribute(options=MODES, default=self.values[attr])
-        if attr == "schedule_mode":
-            return Attribute(options=SCHEDULE_MODES, default=self.schedule_mode)
         if attr == "led_on_off":
             return Attribute(is_on=self.values[attr])
         if attr == "daylight_saving_time":
@@ -1628,6 +1639,104 @@ class Device:
         self.diagnostics["daylight_saving_time"] = enabled
         return True
 
+    def _manual_preset_values(self, slot: int) -> list[int] | None:
+        """Return one complete classic preset from fixture readback."""
+        presets = self.values.get("native_manual_presets")
+        channel_count = self._resolved_channel_count()
+        if (
+            not isinstance(presets, list)
+            or len(presets) != 4
+            or not isinstance(presets[slot - 1], list)
+            or len(presets[slot - 1]) != channel_count
+        ):
+            return None
+        return [int(value) for value in presets[slot - 1]]
+
+    async def async_recall_manual_preset(self, slot: int) -> bool:
+        """Apply one fixture-resident classic P1-P4 preset as FluvalConnect does."""
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= 4:
+            self._set_diagnostic_error("invalid_manual_preset", "Manual preset slot must be between 1 and 4")
+            return False
+        if not await self._async_prepare_command():
+            return False
+        if self._uses_wifi_protocol() or self._uses_plant_pro_protocol():
+            self._set_diagnostic_error(
+                "unsupported_manual_preset",
+                "Fixture-resident manual presets are supported only by classic Fluval controllers",
+            )
+            return False
+
+        preset = self._manual_preset_values(slot)
+        if preset is None:
+            await self.async_refresh_state()
+            preset = self._manual_preset_values(slot)
+        if preset is None:
+            self._set_diagnostic_error(
+                "manual_preset_unavailable",
+                "Manual preset readback is unavailable; put the fixture in Manual mode and retry",
+            )
+            return False
+        if not self.values.get("led_on_off"):
+            self._set_diagnostic_error(
+                "manual_preset_requires_light_on",
+                "Turn on the fixture before recalling a manual preset",
+            )
+            return False
+
+        targets = {channel: int(preset[index]) for index, channel in enumerate(self.numbers())}
+        if not await self.async_set_channels(targets, force=True):
+            return False
+        self.diagnostics.update(
+            {
+                "status": "manual_preset_recalled",
+                "manual_preset_slot": slot,
+                "last_error": None,
+            }
+        )
+        return True
+
+    async def async_save_manual_preset(self, slot: int) -> bool:
+        """Save the current classic channel state in fixture slot P1-P4."""
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= 4:
+            self._set_diagnostic_error("invalid_manual_preset", "Manual preset slot must be between 1 and 4")
+            return False
+        if not await self._async_prepare_command():
+            return False
+        if self._uses_wifi_protocol() or self._uses_plant_pro_protocol():
+            self._set_diagnostic_error(
+                "unsupported_manual_preset",
+                "Fixture-resident manual presets are supported only by classic Fluval controllers",
+            )
+            return False
+        if self.values.get("mode") != "manual":
+            self._set_diagnostic_error(
+                "manual_preset_requires_manual_mode",
+                "Select Manual mode before saving a fixture preset",
+            )
+            return False
+        if not await self._async_send_packet(protocol.old_save_manual_preset_packet(slot - 1)):
+            return False
+
+        presets = self.values.get("native_manual_presets")
+        channel_count = self._resolved_channel_count()
+        if (
+            isinstance(presets, list)
+            and len(presets) == 4
+            and all(isinstance(preset, list) and len(preset) == channel_count for preset in presets)
+        ):
+            updated_presets = [list(preset) for preset in presets]
+            updated_presets[slot - 1] = self._channel_values()
+            self.values["native_manual_presets"] = updated_presets
+            self.diagnostics["native_manual_presets"] = updated_presets
+        self.diagnostics.update(
+            {
+                "status": "manual_preset_saved",
+                "manual_preset_slot": slot,
+                "last_error": None,
+            }
+        )
+        return True
+
     async def async_identify(self) -> bool:
         """Ask the fixture to identify itself using FluvalConnect's Find command."""
         if not await self._async_prepare_command():
@@ -2101,6 +2210,14 @@ class Device:
             self.values["led_on_off"] = bool(decoded["power"])
             if self.supports_classic_effects():
                 self.values["effect"] = self._native_effect_name(int(decoded["effect_id"]))
+            presets = [list(preset) for preset in decoded["presets"]]
+            self.values["native_manual_presets"] = presets
+            self.diagnostics.update(
+                {
+                    "native_manual_presets": presets,
+                    "native_manual_presets_readback_at": datetime.now(UTC).isoformat(),
+                }
+            )
             # Wire scale is 0-1000 (percent * 10); HA entities use 0-100.
             channels = decoded["channels"]
             self._channel_count_hint = channel_count

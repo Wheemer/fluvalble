@@ -7,7 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Removed the duplicate schedule-mode select from every light model. The APK
+  exposes Manual, Automatic, and Professional through one fixture mode control;
+  native schedule editors configure that same mode instead of creating another
+  device dropdown. Existing stale schedule-mode entities are removed during
+  config-entry setup.
+
 ### Added
+- Added classic fixture-resident P1-P4 recall and save actions using the APK's
+  `6804` channel write and `6806` zero-based save-slot command.
 - Added product-aware wavelength previews backed by FluvalConnect's six current
   and legacy AquaSky, Plant, and Reef spectrum datasets. Five-channel previews
   now use the APK's real fifth curve instead of a synthetic approximation.
@@ -48,6 +57,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   and the card identifies local, uploaded, and fixture-confirmed data.
 - Added an optional persistent BLE connection mode (`0`-second active window)
   with immediate serialized recovery after unexpected disconnects.
+- Added Plant Pro / Plant 4.0 core BLE support using its native unencrypted SPP
+  transport for discovery, power, mode, five-channel colour, and live state.
+- Added Plant Pro RTC synchronization using the FluvalConnect mesh clock
+  command so fixture-owned schedules follow Home Assistant's local time.
+- Added four Plant Pro native effects through Home Assistant's standard light
+  effect control, based on commands recovered from the FluvalConnect APK.
+- Added Plant Pro fixture-owned Auto and Pro schedules, plus seven timed
+  native-effect windows, with validated Home Assistant actions and diagnostics
+  readback.
 
 ### Changed
 - Corrected classic and Plant Pro clock synchronization to encode weekdays as
@@ -57,6 +75,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Aligned classic state readback with FluvalConnect's exact `6805` response
   framing, mode-specific lengths, XOR validation, power flag, channel layout,
   and manual weather-effect state.
+- Preserved all four fixture-resident classic manual preset arrays from the
+  APK-defined `6805` manual-state payload instead of discarding that state.
 - Aligned BLE session initialization with FluvalConnect's fixture-clock, state-read,
   and FACEBD timezone sequence so native schedules do not briefly start from a
   stale controller clock after reconnecting.
@@ -93,7 +113,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Replaced the recorder-backed diagnostics sensor and command-sending diagnostic
   buttons with Home Assistant's standard downloadable report. Collecting a
   report does not scan, connect, disconnect, refresh state, or send BLE commands.
-- Remove stale registry entries for the retired Diagnostics, Refresh diagnostics,
+- Removed stale registry entries for the retired Diagnostics, Refresh diagnostics,
   and Test LED channels entities during config-entry setup.
 - Replaced the Home Assistant minute-by-minute schedule executor with fixture-native
   scheduling. Existing Auto curves are migrated once when they fit the detected
@@ -102,15 +122,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - BLE reconnects now replace stale clients, use one bounded connector retry
   cycle, and cannot race an in-flight command or integration unload.
 
-### Added
-- Plant Pro / Plant 4.0 core BLE support using its native unencrypted SPP
-  transport for discovery, power, mode, five-channel colour, and live state.
-- Plant Pro RTC synchronization using the FluvalConnect mesh clock command so
-  fixture-owned schedules follow Home Assistant's local time.
-- Four Plant Pro native effects through Home Assistant's standard light effect
-  control, based on commands recovered from the FluvalConnect APK.
-- Plant Pro fixture-owned Auto and Pro schedules, plus seven timed native-effect
-  windows, with validated Home Assistant actions and diagnostics readback.
+### Fixed
+- Restored device command-error reporting so failed light, preview, and schedule
+  actions raise the underlying BLE error instead of silently succeeding or
+  raising an unrelated `AttributeError`.
+- Restored safe cleanup for legacy duplicate device rows and MAC addresses that
+  older releases incorrectly displayed as serial numbers.
+- Aligned effect-off state and active-effect colour attributes with Home
+  Assistant's current light-entity contract.
+- Stopped both software and fixture-native schedule previews during config-entry
+  unload, leaving no entry-owned preview task running after reload.
+- Made APK-decoded product capabilities authoritative over manual fallback
+  profiles and removed transport-only effect catalogue guesses.
 
 ### Documentation
 - Added a one-click HACS repository button and Plant Pro native schedule usage.
