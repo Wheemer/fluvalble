@@ -45,7 +45,7 @@ compatibility when it runs. GitHub Actions retain their security commit pins.
 - Keep the suite green. The CI lint and test jobs must pass before a
   PR can be merged.
 - Coverage must remain at or above the floor in `pyproject.toml`
-  (currently 33%, with a target of ~70% as entity-platform tests land).
+  (currently 65%).
 
 ## Code style
 

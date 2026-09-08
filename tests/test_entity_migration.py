@@ -12,12 +12,14 @@ from custom_components.fluvalble import (
     PLATFORMS,
     _cleanup_duplicate_devices,
     _migrate_legacy_registry_entries,
+    _sync_connection_diagnostic_registry_entries,
 )
 
 
-def test_retired_platforms_are_replaced_by_native_colour_light():
+def test_native_colour_light_and_exact_channel_controls_are_both_loaded():
     assert Platform.LIGHT in PLATFORMS
-    assert Platform.NUMBER not in PLATFORMS
+    assert Platform.NUMBER in PLATFORMS
+    assert Platform.SCENE in PLATFORMS
     assert Platform.SWITCH in PLATFORMS
 
 
@@ -72,6 +74,11 @@ def test_retired_platform_and_diagnostic_entities_are_removed(monkeypatch):
         domain="button",
         unique_id="AABBCCDDEEFF_test_led_channels",
     )
+    advertisement_source = SimpleNamespace(
+        entity_id="sensor.fluval_bluetooth_advertisement_source",
+        domain="sensor",
+        unique_id="AABBCCDDEEFF_advertisement_source",
+    )
     registry = MagicMock()
     entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
     entity_registry.async_get = MagicMock(return_value=registry)
@@ -87,6 +94,7 @@ def test_retired_platform_and_diagnostic_entities_are_removed(monkeypatch):
             diagnostics,
             refresh,
             channel_test,
+            advertisement_source,
         ]
     )
     monkeypatch.setitem(
@@ -111,13 +119,13 @@ def test_retired_platform_and_diagnostic_entities_are_removed(monkeypatch):
     )
 
     assert [call.args[0] for call in registry.async_remove.call_args_list] == [
-        channel.entity_id,
         legacy_number.entity_id,
         legacy_switch.entity_id,
         schedule_mode.entity_id,
         diagnostics.entity_id,
         refresh.entity_id,
         channel_test.entity_id,
+        advertisement_source.entity_id,
     ]
 
 
@@ -143,6 +151,94 @@ def test_mac_is_removed_from_legacy_serial_number(monkeypatch):
     )
 
     device_registry.async_update_device.assert_called_once_with("device_1", serial_number=None)
+
+
+def test_persistent_connection_disables_only_stale_rssi(monkeypatch):
+    integration_disabled = object()
+    user_disabled = object()
+
+    rssi = SimpleNamespace(
+        entity_id="sensor.fluval_signal_strength",
+        unique_id="AABBCCDDEEFF_rssi",
+        disabled_by=None,
+    )
+    last_seen = SimpleNamespace(
+        entity_id="sensor.fluval_last_seen",
+        unique_id="AABBCCDDEEFF_last_seen",
+        disabled_by=None,
+    )
+    source = SimpleNamespace(
+        entity_id="sensor.fluval_source",
+        unique_id="AABBCCDDEEFF_active_connection_source",
+        disabled_by=None,
+    )
+    registry = MagicMock()
+    entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
+    entity_registry.RegistryEntryDisabler = SimpleNamespace(
+        INTEGRATION=integration_disabled,
+        USER=user_disabled,
+    )
+    entity_registry.async_get = MagicMock(return_value=registry)
+    entity_registry.async_entries_for_config_entry = MagicMock(return_value=[rssi, last_seen, source])
+    monkeypatch.setitem(sys.modules, "homeassistant.helpers.entity_registry", entity_registry)
+
+    _sync_connection_diagnostic_registry_entries(MagicMock(), SimpleNamespace(entry_id="entry_1"), 0)
+
+    assert registry.async_update_entity.call_args_list == [
+        ((rssi.entity_id,), {"disabled_by": integration_disabled}),
+    ]
+
+
+def test_persistent_connection_restores_connected_since(monkeypatch):
+    integration_disabled = object()
+
+    last_seen = SimpleNamespace(
+        entity_id="sensor.fluval_last_seen",
+        unique_id="AABBCCDDEEFF_last_seen",
+        disabled_by=integration_disabled,
+    )
+    registry = MagicMock()
+    entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
+    entity_registry.RegistryEntryDisabler = SimpleNamespace(INTEGRATION=integration_disabled)
+    entity_registry.async_get = MagicMock(return_value=registry)
+    entity_registry.async_entries_for_config_entry = MagicMock(return_value=[last_seen])
+    monkeypatch.setitem(sys.modules, "homeassistant.helpers.entity_registry", entity_registry)
+
+    _sync_connection_diagnostic_registry_entries(MagicMock(), SimpleNamespace(entry_id="entry_1"), 0)
+
+    registry.async_update_entity.assert_called_once_with(last_seen.entity_id, disabled_by=None)
+
+
+def test_timed_connection_restores_only_integration_disabled_diagnostics(monkeypatch):
+    integration_disabler = object()
+    user_disabler = object()
+
+    integration_disabled = SimpleNamespace(
+        entity_id="sensor.fluval_signal_strength",
+        unique_id="AABBCCDDEEFF_rssi",
+        disabled_by=integration_disabler,
+    )
+    user_disabled = SimpleNamespace(
+        entity_id="sensor.fluval_last_seen",
+        unique_id="AABBCCDDEEFF_last_seen",
+        disabled_by=user_disabler,
+    )
+    registry = MagicMock()
+    entity_registry = types.ModuleType("homeassistant.helpers.entity_registry")
+    entity_registry.RegistryEntryDisabler = SimpleNamespace(
+        INTEGRATION=integration_disabler,
+        USER=user_disabler,
+    )
+    entity_registry.async_get = MagicMock(return_value=registry)
+    entity_registry.async_entries_for_config_entry = MagicMock(return_value=[integration_disabled, user_disabled])
+    monkeypatch.setitem(sys.modules, "homeassistant.helpers.entity_registry", entity_registry)
+
+    _sync_connection_diagnostic_registry_entries(MagicMock(), SimpleNamespace(entry_id="entry_1"), 30)
+
+    registry.async_update_entity.assert_called_once_with(
+        integration_disabled.entity_id,
+        disabled_by=None,
+    )
 
 
 def test_duplicate_device_rows_are_safely_consolidated(monkeypatch):

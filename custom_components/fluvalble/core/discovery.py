@@ -124,15 +124,18 @@ def is_likely_fluval(
     name: str | None,
     advertisement: AdvertisementData | None = None,
 ) -> bool:
-    """Return whether an advertisement looks like a Fluval LED controller.
+    """Return whether the APK identifies this advertisement as a Fluval light.
 
-    Strict on purpose: Home Assistant discovery prompts fire for every
-    matcher hit. Generic name substrings (plant/marine) and common UUIDs
-    (fff0 mesh) must not qualify alone.
+    FluvalConnect's light scanners accept advertisements only after decoding
+    a product ID present in the app's light catalogue. Names and GATT service
+    UUIDs select scan/connect paths, but they are not product identity. Keep
+    the same boundary here so pumps, feeders, gateways, and unrelated FFF0
+    devices cannot become Fluval light config flows.
     """
-    if name_looks_fluval(name):
-        return True
-    return has_fluval_service_uuid(advertisement)
+    del name
+    return bool(
+        advertisement is not None and product_id_from_manufacturer_data(advertisement.manufacturer_data) is not None
+    )
 
 
 def detect_model(name: str | None, advertisement: AdvertisementData | None) -> str:
@@ -164,6 +167,10 @@ def detect_model(name: str | None, advertisement: AdvertisementData | None) -> s
         return "Marine Bluetooth LED"
 
     if "reef" in lowered and name_looks_fluval(display_name):
+        if "nano" in lowered:
+            return "Fluval Reef Nano 4.0 LED"
+        if "4.0" in lowered or "4_" in lowered:
+            return "Fluval Reef 4.0 LED"
         return "Reef Bluetooth LED"
 
     if "aquasky" in lowered:

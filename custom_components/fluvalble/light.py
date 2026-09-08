@@ -6,7 +6,6 @@ from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_EFFECT,
     ATTR_RGB_COLOR,
-    ATTR_RGBW_COLOR,
     ColorMode,
     LightEntity,
     LightEntityFeature,
@@ -14,17 +13,16 @@ from homeassistant.components.light import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from . import require_entry_runtime_data
 from .core.device import Device
 from .core.effects import EFFECT_NONE
 from .core.entity import FluvalEntity
 
 PARALLEL_UPDATES = 0
 
-_DEFAULT_PLANT_RGB = (170, 210, 255)
-_DEFAULT_AQUASKY_RGBW = (0, 0, 0, 255)
+_DEFAULT_RGB = (255, 255, 255)
 
 
 def create_entities(device: Device) -> list:
@@ -38,7 +36,7 @@ async def async_setup_entry(
     add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Fluval light entity."""
-    runtime = config_entry.runtime_data
+    runtime = require_entry_runtime_data(hass, config_entry)
     device = runtime.device
 
     if device:
@@ -52,7 +50,6 @@ class FluvalLight(FluvalEntity, LightEntity):
 
     _attr_icon = "mdi:led-strip-variant"
     _attr_rgb_color: tuple[int, int, int] | None = None
-    _attr_rgbw_color: tuple[int, int, int, int] | None = None
 
     def __init__(self, device: Device, attr: str) -> None:
         super().__init__(device, attr)
@@ -60,9 +57,12 @@ class FluvalLight(FluvalEntity, LightEntity):
         if device.light_mode() == "rgb":
             self._attr_color_mode = ColorMode.RGB
             self._attr_supported_color_modes = {ColorMode.RGB}
+        elif device.light_mode() == "brightness":
+            self._attr_color_mode = ColorMode.BRIGHTNESS
+            self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
         else:
-            self._attr_color_mode = ColorMode.RGBW
-            self._attr_supported_color_modes = {ColorMode.RGBW}
+            self._attr_color_mode = ColorMode.RGB
+            self._attr_supported_color_modes = {ColorMode.RGB}
 
     def internal_update(self) -> None:
         """Refresh the entity from decoded fixture state."""
@@ -84,22 +84,34 @@ class FluvalLight(FluvalEntity, LightEntity):
 
         self._attr_brightness = self.device.light_brightness_255() or None
 
-        if self.device.light_mode() == "rgb":
+        mode = self.device.light_mode()
+        if mode == "rgb":
             self._attr_color_mode = ColorMode.RGB
             self._attr_supported_color_modes = {ColorMode.RGB}
             self._attr_rgb_color = self.device.light_rgb_255()
-            self._attr_rgbw_color = None
-        else:
-            self._attr_color_mode = ColorMode.RGBW
-            self._attr_supported_color_modes = {ColorMode.RGBW}
-            self._attr_rgbw_color = self.device.light_rgbw_255()
+        elif mode == "brightness":
+            self._attr_color_mode = ColorMode.BRIGHTNESS
+            self._attr_supported_color_modes = {ColorMode.BRIGHTNESS}
             self._attr_rgb_color = None
+        else:
+            self._attr_supported_color_modes = {ColorMode.RGB}
+            self._attr_color_mode = ColorMode.RGB
+            self._attr_rgb_color = self.device.aquasky_rgb_255()
 
         if self.hass:
             self._async_write_ha_state()
 
     async def async_turn_on(self, **kwargs) -> None:
         """Turn on the fixture and apply an optional colour or brightness."""
+        async with self.device.command_transaction():
+            await self._async_turn_on(**kwargs)
+
+    async def _async_turn_on(self, **kwargs) -> None:
+        """Apply one complete turn-on transaction."""
+        replaces_preview_state = any(key in kwargs for key in (ATTR_EFFECT, ATTR_BRIGHTNESS, ATTR_RGB_COLOR))
+        if not await self.device.async_stop_preview(restore=not replaces_preview_state):
+            self._raise_command_error()
+
         requested_effect = kwargs.get(ATTR_EFFECT)
         if requested_effect == EFFECT_NONE:
             if not await self.device.async_stop_effect():
@@ -116,19 +128,23 @@ class FluvalLight(FluvalEntity, LightEntity):
             1,
             min(
                 255,
-                int(kwargs.get(ATTR_BRIGHTNESS, self.device.light_brightness_255() or 255)),
+                int(
+                    kwargs.get(
+                        ATTR_BRIGHTNESS,
+                        self.device.light_brightness_255() or 255,
+                    )
+                ),
             ),
         )
 
         color = self._requested_color(kwargs, brightness)
         if color is not None:
-            channels, rgb, rgbw = color
+            channels, rgb = color
             if not await self.device.async_apply_light_channels(channels):
                 self._raise_command_error()
             self.device.remember_commanded_light(
                 channels,
                 rgb=rgb,
-                rgbw=rgbw,
                 brightness=brightness,
             )
             self.internal_update()
@@ -146,13 +162,12 @@ class FluvalLight(FluvalEntity, LightEntity):
             self.internal_update()
             return
 
-        channels, rgb, rgbw = self._default_color(brightness)
+        channels, rgb = self._default_color(brightness)
         if not await self.device.async_apply_light_channels(channels):
             self._raise_command_error()
         self.device.remember_commanded_light(
             channels,
             rgb=rgb,
-            rgbw=rgbw,
             brightness=brightness,
         )
         self.internal_update()
@@ -165,7 +180,7 @@ class FluvalLight(FluvalEntity, LightEntity):
             self._attr_supported_features = LightEntityFeature.EFFECT
         else:
             self._attr_effect = None
-            self._attr_supported_features = 0
+            self._attr_supported_features = LightEntityFeature(0)
 
     def _requested_color(
         self,
@@ -175,24 +190,23 @@ class FluvalLight(FluvalEntity, LightEntity):
         tuple[
             dict[str, int],
             tuple[int, int, int] | None,
-            tuple[int, int, int, int] | None,
         ]
         | None
     ):
         """Translate colour kwargs into physical Fluval channels."""
-        if self.device.light_mode() == "rgb":
+        mode = self.device.light_mode()
+        if mode == "brightness":
+            return None
+        if mode == "rgb":
             if ATTR_RGB_COLOR not in kwargs:
                 return None
             rgb = tuple(kwargs[ATTR_RGB_COLOR])
-            return self.device.channels_from_rgb(rgb, brightness), rgb, None
+            return self.device.channels_from_rgb(rgb, brightness), rgb
 
-        if ATTR_RGBW_COLOR in kwargs:
-            rgbw = tuple(kwargs[ATTR_RGBW_COLOR])
-        elif ATTR_RGB_COLOR in kwargs:
-            rgbw = (*tuple(kwargs[ATTR_RGB_COLOR]), 0)
-        else:
-            return None
-        return self.device.channels_from_rgbw(rgbw, brightness), None, rgbw
+        if ATTR_RGB_COLOR in kwargs:
+            rgb = tuple(kwargs[ATTR_RGB_COLOR])
+            return self.device.channels_from_aquasky_rgb(rgb, brightness), rgb
+        return None
 
     def _default_color(
         self,
@@ -200,37 +214,38 @@ class FluvalLight(FluvalEntity, LightEntity):
     ) -> tuple[
         dict[str, int],
         tuple[int, int, int] | None,
-        tuple[int, int, int, int] | None,
     ]:
         """Return a useful first-on colour for a fixture with zeroed channels."""
-        if self.device.light_mode() == "rgb":
+        mode = self.device.light_mode()
+        if mode == "brightness":
+            level = round(brightness / 255 * 100)
+            return {channel: level for channel in self.device.numbers()}, None
+        if mode == "rgb":
             return (
-                self.device.channels_from_rgb(_DEFAULT_PLANT_RGB, brightness),
-                _DEFAULT_PLANT_RGB,
-                None,
+                self.device.channels_from_rgb(_DEFAULT_RGB, brightness),
+                _DEFAULT_RGB,
             )
-        return (
-            self.device.channels_from_rgbw(_DEFAULT_AQUASKY_RGBW, brightness),
-            None,
-            _DEFAULT_AQUASKY_RGBW,
-        )
+        return self.device.channels_from_aquasky_white(brightness), None
 
     async def _async_set_brightness(self, brightness: int) -> bool:
         """Scale the current colour mix without changing its hue."""
         if self.device.master_brightness() == 0:
-            channels, rgb, rgbw = self._default_color(brightness)
+            channels, rgb = self._default_color(brightness)
             if not await self.device.async_apply_light_channels(channels):
                 return False
             self.device.remember_commanded_light(
                 channels,
                 rgb=rgb,
-                rgbw=rgbw,
                 brightness=brightness,
             )
             return True
 
-        rgb = self.device.light_rgb_255() if self.device.light_mode() == "rgb" else None
-        rgbw = self.device.light_rgbw_255() if self.device.light_mode() == "rgbw" else None
+        if self.device.light_mode() == "rgb":
+            rgb = self.device.light_rgb_255()
+        elif not self.device.aquasky_white_mode():
+            rgb = self.device.aquasky_rgb_255()
+        else:
+            rgb = None
         if not await self.device.async_set_master_brightness(round(brightness / 255 * 100)):
             return False
         self.device.clear_commanded_light()
@@ -240,19 +255,24 @@ class FluvalLight(FluvalEntity, LightEntity):
         self.device.remember_commanded_light(
             channels,
             rgb=rgb,
-            rgbw=rgbw,
             brightness=brightness,
         )
         return True
 
     async def async_turn_off(self, **kwargs) -> None:
         """Turn off the fixture without rewriting its colour channels."""
-        if not await self.device.async_set_switch("led_on_off", False):
+        async with self.device.command_transaction():
+            await self._async_turn_off(**kwargs)
+
+    async def _async_turn_off(self, **kwargs) -> None:
+        """Apply one complete turn-off transaction."""
+        # Power-off must not restore the preview's saved colour first. The APK
+        # sends the power command directly; replaying channels here creates a
+        # visible colour flash before the fixture fades out.
+        preview_stopped = await self.device.async_stop_preview(restore=False)
+        powered_off = await self.device.async_set_switch("led_on_off", False)
+        if not preview_stopped or not powered_off:
             self.internal_update()
             self._raise_command_error()
         self._attr_is_on = False
         self._async_write_ha_state()
-
-    def _raise_command_error(self) -> None:
-        """Report a failed BLE command through Home Assistant's service call."""
-        raise HomeAssistantError(self.device.command_error_message())

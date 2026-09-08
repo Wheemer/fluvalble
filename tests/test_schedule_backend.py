@@ -15,7 +15,9 @@ from custom_components.fluvalble import (
     EFFECT_CATALOG,
     FluvalRuntimeData,
     SERVICE_RECALL_MANUAL_PRESET,
+    SERVICE_PREVIEW_SCHEDULE,
     SERVICE_SAVE_MANUAL_PRESET,
+    SERVICE_SET_CHANNELS,
     _register_services,
     _async_schedule_payload,
     _async_save_effect_schedule,
@@ -59,9 +61,11 @@ class _FakeHass:
 class _FakeServices:
     def __init__(self):
         self.handlers = {}
+        self.schemas = {}
 
     def async_register(self, domain, service, handler, schema=None):
         self.handlers[(domain, service)] = handler
+        self.schemas[(domain, service)] = schema
 
 
 def _make_device(*, product_id=None):
@@ -122,6 +126,74 @@ def test_manual_preset_services_dispatch_to_selected_device():
     asyncio.run(_async_test_manual_preset_services_dispatch_to_selected_device())
 
 
+def test_set_channels_service_reports_ble_write_failure():
+    asyncio.run(_async_test_set_channels_service_reports_ble_write_failure())
+
+
+async def _async_test_set_channels_service_reports_ble_write_failure():
+    from homeassistant.exceptions import HomeAssistantError
+
+    device = _make_device()
+    device.async_set_channels = AsyncMock(return_value=False)
+    device.diagnostics["last_error"] = "BLE write failed"
+    hass = _FakeHass(device)
+    _register_services(hass)
+
+    with pytest.raises(HomeAssistantError, match="BLE write failed") as raised:
+        await hass.services.handlers[(DOMAIN, SERVICE_SET_CHANNELS)](
+            SimpleNamespace(
+                data={
+                    "entry_id": "entry_1",
+                    "red": 50,
+                    "transition": 0,
+                    "step_seconds": 0.1,
+                }
+            )
+        )
+
+    assert raised.value.translation_domain == DOMAIN
+    assert raised.value.translation_key == "command_failed"
+    assert raised.value.translation_placeholders == {"error": "BLE write failed"}
+    device.async_set_channels.assert_awaited_once_with(
+        {"channel_1": 50},
+        transition=0,
+        step_seconds=0.1,
+    )
+
+
+def test_preview_schedule_service_reports_start_failure():
+    asyncio.run(_async_test_preview_schedule_service_reports_start_failure())
+
+
+async def _async_test_preview_schedule_service_reports_start_failure():
+    from homeassistant.exceptions import HomeAssistantError
+
+    device = _make_device()
+    device.async_preview_schedule = AsyncMock(return_value=False)
+    device.diagnostics["last_error"] = "Unable to stop the previous preview"
+    hass = _FakeHass(device)
+    _register_services(hass)
+
+    points = _schedule_points()
+    with pytest.raises(HomeAssistantError, match="Unable to stop the previous preview"):
+        await hass.services.handlers[(DOMAIN, SERVICE_PREVIEW_SCHEDULE)](
+            SimpleNamespace(
+                data={
+                    "entry_id": "entry_1",
+                    "points": points,
+                    "duration": 60,
+                    "step_seconds": 2,
+                }
+            )
+        )
+
+    device.async_preview_schedule.assert_awaited_once_with(
+        points,
+        duration=60,
+        step_seconds=2,
+    )
+
+
 async def _async_test_manual_preset_services_dispatch_to_selected_device():
     from homeassistant.exceptions import HomeAssistantError
 
@@ -135,7 +207,7 @@ async def _async_test_manual_preset_services_dispatch_to_selected_device():
         SimpleNamespace(data={"entry_id": "entry_1", "slot": 2})
     )
     await hass.services.handlers[(DOMAIN, SERVICE_SAVE_MANUAL_PRESET)](
-        SimpleNamespace(data={"entry_id": "entry_1", "slot": 3})
+        SimpleNamespace(data={"mac": "aa:bb:cc:dd:ee:ff", "slot": 3})
     )
 
     device.async_recall_manual_preset.assert_awaited_once_with(2)
@@ -147,6 +219,165 @@ async def _async_test_manual_preset_services_dispatch_to_selected_device():
         await hass.services.handlers[(DOMAIN, SERVICE_RECALL_MANUAL_PRESET)](
             SimpleNamespace(data={"entry_id": "entry_1", "slot": 1})
         )
+
+
+def test_service_without_target_keeps_single_fixture_compatibility():
+    asyncio.run(_async_test_service_without_target_keeps_single_fixture_compatibility())
+
+
+async def _async_test_service_without_target_keeps_single_fixture_compatibility():
+    device = _make_device()
+    device.async_recall_manual_preset = AsyncMock(return_value=True)
+    hass = _FakeHass(device)
+    _register_services(hass)
+
+    await hass.services.handlers[(DOMAIN, SERVICE_RECALL_MANUAL_PRESET)](SimpleNamespace(data={"slot": 4}))
+
+    device.async_recall_manual_preset.assert_awaited_once_with(4)
+
+
+def test_services_accept_home_assistant_device_targets():
+    asyncio.run(_async_test_services_accept_home_assistant_device_targets())
+
+
+async def _async_test_services_accept_home_assistant_device_targets():
+    from unittest.mock import patch
+
+    first = _make_device()
+    second = Device(
+        "Plant4.0_Test",
+        config_data={"mac": "11:22:33:44:55:66", "model": "Fluval Plant 4.0 LED", "product_id": 545},
+    )
+    second.connected = True
+    first.async_recall_manual_preset = AsyncMock(return_value=True)
+    second.async_recall_manual_preset = AsyncMock(return_value=True)
+    hass = _FakeHass(first)
+    hass.data[DOMAIN]["entry_2"] = FluvalRuntimeData(device=second)
+    registry = SimpleNamespace(
+        async_get=lambda device_id: SimpleNamespace(config_entries={"entry_2"}) if device_id == "device_2" else None
+    )
+
+    with patch("custom_components.fluvalble.dr.async_get", return_value=registry, create=True):
+        _register_services(hass)
+        await hass.services.handlers[(DOMAIN, SERVICE_RECALL_MANUAL_PRESET)](
+            SimpleNamespace(data={"device_id": "device_2", "slot": 2})
+        )
+
+    first.async_recall_manual_preset.assert_not_awaited()
+    second.async_recall_manual_preset.assert_awaited_once_with(2)
+    schema = hass.services.schemas[(DOMAIN, SERVICE_RECALL_MANUAL_PRESET)].schema
+    assert {"device_id", "entry_id", "mac"}.issubset(schema)
+
+
+def test_service_without_target_rejects_ambiguous_fixtures():
+    asyncio.run(_async_test_service_without_target_rejects_ambiguous_fixtures())
+
+
+async def _async_test_service_without_target_rejects_ambiguous_fixtures():
+    from homeassistant.exceptions import ServiceValidationError
+
+    first = _make_device()
+    second = Device(
+        "Plant4.0_Test",
+        config_data={"mac": "11:22:33:44:55:66", "model": "Fluval Plant 4.0 LED", "product_id": 545},
+    )
+    second.connected = True
+    hass = _FakeHass(first)
+    hass.data[DOMAIN]["entry_2"] = FluvalRuntimeData(device=second)
+    _register_services(hass)
+
+    with pytest.raises(ServiceValidationError) as raised:
+        await hass.services.handlers[(DOMAIN, SERVICE_RECALL_MANUAL_PRESET)](SimpleNamespace(data={"slot": 1}))
+
+    assert raised.value.translation_domain == DOMAIN
+    assert raised.value.translation_key == "select_one_light"
+    assert raised.value.translation_placeholders is None
+
+
+@pytest.mark.parametrize(
+    ("registry_entry", "translation_key"),
+    [
+        (None, "selected_device_missing"),
+        (SimpleNamespace(config_entries=set()), "device_not_managed"),
+    ],
+)
+def test_service_device_target_errors_are_translated_validation_errors(registry_entry, translation_key):
+    asyncio.run(_async_test_service_device_target_error(registry_entry, translation_key))
+
+
+async def _async_test_service_device_target_error(registry_entry, translation_key):
+    from unittest.mock import patch
+
+    from homeassistant.exceptions import ServiceValidationError
+
+    device = _make_device()
+    hass = _FakeHass(device)
+    registry = SimpleNamespace(async_get=lambda _device_id: registry_entry)
+
+    with patch("custom_components.fluvalble.dr.async_get", return_value=registry, create=True):
+        _register_services(hass)
+        with pytest.raises(ServiceValidationError) as raised:
+            await hass.services.handlers[(DOMAIN, SERVICE_RECALL_MANUAL_PRESET)](
+                SimpleNamespace(data={"device_id": "missing-device", "slot": 1})
+            )
+
+    assert raised.value.translation_domain == DOMAIN
+    assert raised.value.translation_key == translation_key
+
+
+def test_set_channels_requires_a_channel_as_translated_validation_error():
+    asyncio.run(_async_test_set_channels_requires_a_channel())
+
+
+async def _async_test_set_channels_requires_a_channel():
+    from homeassistant.exceptions import ServiceValidationError
+
+    hass = _FakeHass(_make_device())
+    _register_services(hass)
+
+    with pytest.raises(ServiceValidationError) as raised:
+        await hass.services.handlers[(DOMAIN, SERVICE_SET_CHANNELS)](
+            SimpleNamespace(
+                data={
+                    "entry_id": "entry_1",
+                    "transition": 0,
+                    "step_seconds": 0.1,
+                }
+            )
+        )
+
+    assert raised.value.translation_domain == DOMAIN
+    assert raised.value.translation_key == "channels_required"
+
+
+def test_unloaded_light_is_a_translated_operational_error():
+    asyncio.run(_async_test_unloaded_light_is_a_translated_operational_error())
+
+
+async def _async_test_unloaded_light_is_a_translated_operational_error():
+    from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+
+    hass = _FakeHass()
+    _register_services(hass)
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await hass.services.handlers[(DOMAIN, SERVICE_RECALL_MANUAL_PRESET)](
+            SimpleNamespace(data={"entry_id": "entry_1", "slot": 1})
+        )
+
+    assert not isinstance(raised.value, ServiceValidationError)
+    assert raised.value.translation_domain == DOMAIN
+    assert raised.value.translation_key == "light_unavailable"
+
+
+def test_service_descriptions_use_device_picker_and_fixture_language():
+    source = (Path(__file__).parents[1] / "custom_components" / "fluvalble" / "services.yaml").read_text()
+
+    assert source.count("integration: fluvalble") == 10
+    assert "entry_id:" not in source
+    assert "MAC address" not in source
+    for internal_label in ("classic/OLD", "FACEBD", "FFF0", "SPP", "MESH", "product ID"):
+        assert internal_label not in source
 
 
 def test_schedule_validator_limits_schedule_size():
@@ -235,6 +466,36 @@ def test_native_auto_schedule_validator_accepts_canonical_channel_order():
     assert schedule["night_levels"] == [0, 0, 0, 0, 0]
 
 
+def test_native_auto_schedule_validator_accepts_four_channel_fixture_order():
+    schedule = _validate_native_auto_schedule(
+        {
+            "sunrise": "08:00",
+            "sunrise_ramp": 60,
+            "sunset": "20:30",
+            "sunset_ramp": 45,
+            "day": {f"channel_{index}": index * 10 for index in range(1, 5)},
+            "night": {f"channel_{index}": 0 for index in range(1, 5)},
+        }
+    )
+
+    assert schedule["day_levels"] == [10, 20, 30, 40]
+    assert schedule["night_levels"] == [0, 0, 0, 0]
+
+
+def test_native_auto_schedule_validator_rejects_mixed_fixture_channel_counts():
+    schedule = {
+        "sunrise": "08:00",
+        "sunrise_ramp": 60,
+        "sunset": "20:30",
+        "sunset_ramp": 45,
+        "day": {f"channel_{index}": 0 for index in range(1, 5)},
+        "night": {f"channel_{index}": 0 for index in range(1, 6)},
+    }
+
+    with pytest.raises(vol.Invalid, match="same fixture channel count"):
+        _validate_native_auto_schedule(schedule)
+
+
 def test_native_pro_and_effect_validators_normalize_service_objects():
     points = _validate_native_pro_points(
         [
@@ -305,6 +566,19 @@ def test_native_pro_validator_accepts_canonical_channel_order():
     )
 
     assert points[0] == {"hour": 8, "minute": 0, "levels": [9, 10, 11, 12, 13]}
+
+
+def test_native_pro_validator_rejects_mixed_fixture_channel_counts():
+    points = [
+        {
+            "time": f"{hour:02d}:00",
+            **{f"channel_{index}": 0 for index in range(1, count + 1)},
+        }
+        for hour, count in ((8, 4), (12, 5), (20, 4), (22, 4))
+    ]
+
+    with pytest.raises(vol.Invalid, match="same fixture channel count"):
+        _validate_native_pro_points(points)
 
 
 def test_native_effect_validator_accepts_classic_and_facebd_weather_catalog():
@@ -395,15 +669,19 @@ def test_control_schedule_mode_updates_the_saved_schedule(monkeypatch):
 
 async def _async_test_removed_ha_auto_mode_is_rejected(monkeypatch):
     import custom_components.fluvalble as integration
-    from homeassistant.exceptions import HomeAssistantError
+    from homeassistant.exceptions import ServiceValidationError
 
     device = _make_device()
     hass = _FakeHass(device)
     _MemoryStore.data = {"schedules": {"entry_1": {"points": _schedule_points(), "mode": "manual"}}}
     monkeypatch.setattr(integration, "Store", _MemoryStore)
 
-    with pytest.raises(HomeAssistantError, match="Unsupported fixture schedule mode"):
+    with pytest.raises(ServiceValidationError) as raised:
         await async_set_schedule_mode(hass, "entry_1", "auto")
+
+    assert raised.value.translation_domain == DOMAIN
+    assert raised.value.translation_key == "unsupported_schedule_mode"
+    assert raised.value.translation_placeholders == {"mode": "auto"}
 
 
 def test_native_schedule_mode_uploads_once_to_the_fixture(monkeypatch):
@@ -634,6 +912,8 @@ def test_schedule_card_exposes_fixture_native_auto_editor():
     assert 'const NATIVE_SERVICE_CHANNELS = ["channel_1"' in source
     assert "buildGraph(points, scheduleChannelDefinitions(this.store))" in source
     assert "point.channel_1 ?? point.red" in source
+    assert "autoSchedulePayload(this.store.autoSchedule, channelCount)" in source
+    assert "NATIVE_SERVICE_CHANNELS.slice(0, channelCount)" in source
 
 
 def test_wavelength_card_uses_apk_spectrum_profiles_without_synthetic_channel():
@@ -752,6 +1032,25 @@ def test_fixture_schedule_readback_normalizes_protocol_shapes():
         "Half moon",
         "Crescent moon",
     ]
+    assert readback["effect_readback_complete"] is True
+
+
+def test_current_reef_spp_effect_readback_is_complete():
+    device = _make_device(product_id=546)
+    device.values["native_effect_schedule"] = [
+        {
+            "start": "12:00",
+            "end": "12:10",
+            "effect": "Lightning",
+            "weekdays": [True, False, False, False, False, False, False],
+            "enabled": True,
+        }
+    ]
+    device.diagnostics["native_schedule_protocol"] = "spp"
+
+    readback = _native_schedule_readback(device)
+
+    assert readback["protocol"] == "spp"
     assert readback["effect_readback_complete"] is True
 
 

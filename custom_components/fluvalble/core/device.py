@@ -1,12 +1,13 @@
 """A single Fluval BLE connected LED device."""
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 import asyncio
 import contextlib
 from datetime import UTC, datetime, timedelta
+from functools import partial, wraps
 import logging
 from time import monotonic
-from typing import Any, TypedDict
+from typing import Any, Concatenate, ParamSpec, TypeVar, TypedDict, cast
 
 from bleak import AdvertisementData, BLEDevice, BleakError, BleakScanner
 from homeassistant.components import bluetooth
@@ -15,7 +16,9 @@ from homeassistant.helpers.event import async_track_point_in_time
 
 from . import (
     CONF_LAMP_PROFILE,
+    CONF_RESTORE_PREVIOUS_MODE,
     DEFAULT_LAMP_PROFILE,
+    DEFAULT_RESTORE_PREVIOUS_MODE,
     LAMP_PROFILE_AQUASKY,
     LAMP_PROFILE_AQUASKY3,
     LAMP_PROFILE_AUTO,
@@ -24,6 +27,7 @@ from . import (
     LAMP_PROFILE_PLANT_PRO,
 )
 from .client import Client
+from .color import channel_percentages_to_rgb, rgb_to_channel_percentages
 from .discovery import (
     CONF_MODEL,
     CONF_PRODUCT_ID,
@@ -51,8 +55,9 @@ NUMBERS = ["channel_1", "channel_2", "channel_3", "channel_4", "channel_5"]
 # control for every supported light family. Schedule editors configure those
 # modes; they are not a second fixture mode selector.
 SELECTS = ["mode"]
-SENSORS = ["rssi", "last_seen", "active_connection_source", "advertisement_source"]
+SENSORS = ["rssi", "last_seen", "active_connection_source", "connection_mode"]
 AQUASKY_NUMBERS = ["channel_1", "channel_2", "channel_3", "channel_4"]
+AQUASKY_NEUTRAL_RGB_TOLERANCE = 8
 CHANNEL_NAMES_AQUASKY = {
     "channel_1": "Red",
     "channel_2": "Green",
@@ -64,7 +69,7 @@ CHANNEL_NAMES_PLANT = {
     "channel_1": "Pink",
     "channel_2": "Blue",
     "channel_3": "Cold White",
-    "channel_4": "White",
+    "channel_4": "Pure White",
     "channel_5": "Warm White",
 }
 CHANNEL_NAMES_MARINE = {
@@ -80,7 +85,7 @@ CHANNEL_NAMES_PLANT_PRO = {
     "channel_1": "Pink",
     "channel_2": "Blue",
     "channel_3": "Cold White",
-    "channel_4": "White",
+    "channel_4": "Pure White",
     "channel_5": "Warm White",
 }
 # Back-compat alias used by tests / schedule helpers
@@ -92,25 +97,24 @@ BLE_LOOKUP_TIMEOUT = 10
 BLE_LOOKUP_RETRIES = 3
 PREVIEW_STEP_SECONDS = 2
 TRANSITION_STEP_SECONDS = 30
+PREVIOUS_MODE_RESTORE_DELAY = 3
 DAY_MINUTES = 24 * 60
 
-# Approximate sRGB appearance of the five-channel spectral LEDs. These values
-# affect only Home Assistant's colour representation; BLE writes still use the
-# APK-defined channel order without conversion at the protocol layer.
-PLANT_CHANNEL_RGB = {
-    "channel_1": (1.00, 0.28, 0.38),
-    "channel_2": (0.18, 0.38, 1.00),
-    "channel_3": (0.72, 0.84, 1.00),
-    "channel_4": (1.00, 1.00, 1.00),
-    "channel_5": (1.00, 0.72, 0.42),
-}
-MARINE_CHANNEL_RGB = {
-    "channel_1": (1.00, 0.25, 0.45),  # Pink
-    "channel_2": (0.00, 1.00, 1.00),  # Cyan
-    "channel_3": (0.00, 0.10, 1.00),  # Blue
-    "channel_4": (0.55, 0.10, 1.00),  # Purple
-    "channel_5": (0.75, 0.86, 1.00),  # Cold White
-}
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def serialized_device_command(
+    method: Callable[Concatenate["Device", _P], Awaitable[_R]],
+) -> Callable[Concatenate["Device", _P], Awaitable[_R]]:
+    """Run one complete device command without interleaving another."""
+
+    @wraps(method)
+    async def wrapped(self: "Device", *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        async with self.command_transaction():
+            return await method(self, *args, **kwargs)
+
+    return cast(Callable[Concatenate["Device", _P], Awaitable[_R]], wrapped)
 
 
 class Attribute(TypedDict, total=False):
@@ -207,15 +211,22 @@ class Device:
         self._clock_synced = False
         self._clock_sync_started = False
         self._clock_sync_lock = asyncio.Lock()
+        self._command_transaction_lock = asyncio.Lock()
+        self._command_transaction_owner: asyncio.Task[Any] | None = None
+        self._command_transaction_depth = 0
+        self._command_generation = 0
         # Preserve the exact colour HA requested while the decoded physical
         # channels still match it.  Plant RGB conversion is intentionally
         # lossy, so reconstructing RGB from those five channels would otherwise
         # make the colour picker jump after every status update.
         self._commanded_rgb: tuple[int, int, int] | None = None
-        self._commanded_rgbw: tuple[int, int, int, int] | None = None
         self._commanded_brightness: int | None = None
         self._commanded_channels: dict[str, int] | None = None
+        self._commanded_at: float | None = None
         self._effect_restore_channels: dict[str, int] | None = None
+        self._restore_previous_mode = bool(config_data.get(CONF_RESTORE_PREVIOUS_MODE, DEFAULT_RESTORE_PREVIOUS_MODE))
+        self._channel_restore_mode: str | None = None
+        self._channel_restore_task: asyncio.Task[None] | None = None
         self._reachability_unsub: Callable[[], None] | None = None
 
         if device and advertisement:
@@ -236,6 +247,30 @@ class Device:
         """Return true when HA has enough BLE info to attempt commands."""
         return bool(self.client or self.conn_info.get("last_seen"))
 
+    @contextlib.asynccontextmanager
+    async def command_transaction(self, *, supersede_transition: bool = True) -> AsyncIterator[None]:
+        """Serialize a complete command while allowing nested device helpers."""
+        task = asyncio.current_task()
+        if task is not None and self._command_transaction_owner is task:
+            self._command_transaction_depth += 1
+            try:
+                yield
+            finally:
+                self._command_transaction_depth -= 1
+            return
+
+        await self._command_transaction_lock.acquire()
+        self._command_transaction_owner = task
+        self._command_transaction_depth = 1
+        if supersede_transition:
+            self._command_generation += 1
+        try:
+            yield
+        finally:
+            self._command_transaction_depth = 0
+            self._command_transaction_owner = None
+            self._command_transaction_lock.release()
+
     def touch_seen(self, *, rssi: int | None = None, notify: bool = True) -> None:
         """Record successful advertisement, connection, or command activity."""
         self.conn_info["last_seen"] = datetime.now(UTC)
@@ -253,6 +288,53 @@ class Device:
         if self._reachability_unsub is not None:
             self._reachability_unsub()
             self._reachability_unsub = None
+
+    def cancel_channel_mode_restore(self, *, clear_saved_mode: bool = True) -> None:
+        """Cancel a delayed mode restoration after manual channel control."""
+        task = self._channel_restore_task
+        self._channel_restore_task = None
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+        if clear_saved_mode:
+            self._channel_restore_mode = None
+
+    async def async_cancel_channel_mode_restore(self) -> None:
+        """Cancel and finish a pending mode-restoration task during unload."""
+        task = self._channel_restore_task
+        self.cancel_channel_mode_restore()
+        if task is not None and task is not asyncio.current_task():
+            await asyncio.gather(task, return_exceptions=True)
+
+    def _schedule_channel_mode_restore(self) -> None:
+        """Restore the pre-adjustment fixture mode after a short quiet period."""
+        if not self._restore_previous_mode or self._channel_restore_mode is None:
+            return
+        self.cancel_channel_mode_restore(clear_saved_mode=False)
+        self._channel_restore_task = asyncio.create_task(self._async_restore_channel_mode())
+
+    async def _async_restore_channel_mode(self) -> None:
+        """Wait for quiet, then restore the mode displaced by channel control."""
+        try:
+            await asyncio.sleep(PREVIOUS_MODE_RESTORE_DELAY)
+            if any(self._channel_values()) or self.values.get("mode") != "manual":
+                self._channel_restore_mode = None
+                return
+            restore_mode = self._channel_restore_mode
+            self._channel_restore_task = None
+            self._channel_restore_mode = None
+            if restore_mode is not None and not await self.async_select_option("mode", restore_mode):
+                _LOGGER.warning(
+                    "Could not restore Fluval mode %s after channel controls reached zero",
+                    restore_mode,
+                )
+            else:
+                for handler in self.updates_component:
+                    handler()
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._channel_restore_task is asyncio.current_task():
+                self._channel_restore_task = None
 
     @callback
     def _on_reachability_expired(self, _now: datetime) -> None:
@@ -292,8 +374,15 @@ class Device:
         """Update BLE metadata."""
         self.address = device.address
         self.conn_info["mac"] = device.address
-        self.touch_seen(rssi=advertisement.rssi, notify=False)
-        self._record_advertisement_source(source or self._source_from_device(device))
+        advertisement_source = source or self._source_from_device(device)
+        active_source = self.conn_info.get("active_connection_source_address")
+        # The RSSI entity describes the route controlling the fixture while a
+        # GATT session is active. An advertisement heard by another scanner is
+        # still retained in downloadable diagnostics, but must not replace the
+        # active route's signal sample.
+        route_rssi = advertisement.rssi if not self.connected or advertisement_source == active_source else None
+        self.touch_seen(rssi=route_rssi, notify=False)
+        self._record_advertisement_source(advertisement_source, advertisement.rssi)
         self.conn_info["service_uuids"] = list(advertisement.service_uuids)
         self.conn_info["service_data"] = {key: bytes(value).hex() for key, value in advertisement.service_data.items()}
         product_id = product_id_from_manufacturer_data(advertisement.manufacturer_data)
@@ -342,21 +431,27 @@ class Device:
                 source_type = getattr(scanner_type, "value", None) or (
                     str(scanner_type) if scanner_type is not None else None
                 )
+        # Scanner names commonly append the source address in parentheses.
+        # Addresses belong in downloadable diagnostics, not entity state.
+        address_suffix = f" ({source})" if source else ""
+        if source_name and address_suffix and source_name.endswith(address_suffix):
+            source_name = source_name[: -len(address_suffix)]
         return {
             "source": source,
             "source_name": source_name,
             "source_type": source_type,
         }
 
-    def _record_advertisement_source(self, source: str | None) -> None:
-        """Record which scanner supplied the advertisement-backed RSSI."""
+    def _record_advertisement_source(self, source: str | None, rssi: int | None) -> None:
+        """Record the latest advertisement separately from route diagnostics."""
         metadata = self._source_metadata(source)
         self.conn_info.update(
             {
                 "advertisement_source": metadata["source_name"],
                 "advertisement_source_address": metadata["source"],
                 "advertisement_source_type": metadata["source_type"],
-                "advertisement_updated_at": self.conn_info.get("rssi_updated_at"),
+                "advertisement_rssi": rssi,
+                "advertisement_updated_at": self.conn_info.get("last_seen"),
             }
         )
 
@@ -366,7 +461,8 @@ class Device:
         connected_source: str | None = None,
     ) -> None:
         """Snapshot the selected HA route after GATT setup succeeds."""
-        metadata = self._source_metadata(connected_source or self._source_from_device(device))
+        source = connected_source or self._source_from_device(device)
+        metadata = self._source_metadata(source)
         self.conn_info.update(
             {
                 "active_connection_source": metadata["source_name"],
@@ -375,6 +471,27 @@ class Device:
                 "active_connection_connected_at": datetime.now(UTC),
             }
         )
+        route_rssi = self._scanner_rssi(source)
+        if route_rssi is None:
+            # A stale value from another scanner is worse than no value.
+            self.conn_info.pop("rssi", None)
+            self.conn_info.pop("rssi_updated_at", None)
+        else:
+            self.touch_seen(rssi=route_rssi, notify=False)
+
+    def _scanner_rssi(self, source: str | None) -> int | None:
+        """Return the latest connectable advertisement RSSI for one scanner."""
+        if self.hass is None or not source:
+            return None
+        scanner_devices = bluetooth.async_scanner_devices_by_address(
+            self.hass,
+            self.address,
+            connectable=True,
+        )
+        for scanner_device in scanner_devices:
+            if str(scanner_device.scanner.source) == source:
+                return scanner_device.advertisement.rssi
+        return None
 
     def set_connected(self, connected: bool):
         """Set active GATT status while tracking fixture reachability."""
@@ -462,8 +579,10 @@ class Device:
         ]
         self.values["native_effect_schedule"] = normalized
         self.diagnostics["native_effect_schedule"] = normalized
-        if protocol_name == "plant_pro":
-            # Backward-compatible diagnostics key from the original Plant Pro service.
+        if protocol_name == "spp" and self.uses_plant_spectrum():
+            # Backward-compatible diagnostics key from the original
+            # Plant-PRO-only implementation. Reef fixtures use only the
+            # protocol-neutral key above.
             self.diagnostics["plant_pro_effect_schedule"] = normalized
         self.diagnostics.update(
             {
@@ -492,20 +611,14 @@ class Device:
             return 5
         if self._channel_count_hint in (4, 5):
             return self._channel_count_hint
-        if self.facebd:
-            return 4
-        if self._uses_plant_pro_protocol():
+        if self._uses_spp_protocol():
+            # FluvalConnect's current FFF0/SPP command schema always carries
+            # five emitters for both Plant and Reef products. This is live
+            # protocol evidence, not a product inference from the name.
             return 5
-
-        model_l = (self.model or "").lower()
-        name_l = (self.name or "").lower()
-        combined = f"{model_l} {name_l}"
-
-        if any(token in combined for token in ("plant", "marine", "reef")):
-            return 5
-        # AquaSky controllers are RGBW. Plant/Marine fixtures remain 5-channel.
-        if "aquasky" in combined:
-            return 4
+        # Keep the historical five-channel superset until an APK product ID,
+        # explicit profile, or decoded controller response resolves the real
+        # count. Do not infer a layout from a user-editable Bluetooth name.
         return 5
 
     def _channel_labels(self) -> dict[str, str]:
@@ -527,13 +640,9 @@ class Device:
             return CHANNEL_NAMES_MARINE
         if profile in (LAMP_PROFILE_AQUASKY, LAMP_PROFILE_AQUASKY3):
             return CHANNEL_NAMES_AQUASKY
-        model_l = (self.model or "").lower()
-        name_l = (self.name or "").lower()
-        if "marine" in model_l or "marine" in name_l or "reef" in model_l or "reef" in name_l:
-            return CHANNEL_NAMES_MARINE
-        if "plant" in model_l or "plant" in name_l:
-            return CHANNEL_NAMES_PLANT
-        return CHANNEL_NAMES_AQUASKY
+        # Unknown automatic fixtures retain generic Channel N labels until
+        # product identity or an explicit profile supplies APK channel names.
+        return {}
 
     def spectrum_profile(self) -> str | None:
         """Return the APK spectrum asset family for this exact fixture."""
@@ -543,13 +652,21 @@ class Device:
         # Explicit profile choices are the only safe fallback when no APK
         # product ID was decoded. Auto detection must not invent a generation.
         profile = (self.lamp_profile or LAMP_PROFILE_AUTO).lower()
-        return {
+        selected = {
             LAMP_PROFILE_AQUASKY: "aquasky_legacy",
             LAMP_PROFILE_AQUASKY3: "aquasky_current",
             LAMP_PROFILE_PLANT: "plant_legacy",
             LAMP_PROFILE_PLANT_PRO: "plant_current",
             LAMP_PROFILE_MARINE: "reef_legacy",
         }.get(profile)
+        if selected is not None:
+            return selected
+
+        # A family or generation in a Bluetooth name is not sufficient to
+        # choose between the APK's old and current measured spectrum assets.
+        # Keep automatic selection product-ID based; users can still select an
+        # explicit fixture profile when an advertisement has no decodable ID.
+        return None
 
     def uses_plant_spectrum(self) -> bool:
         """Return whether the fixture uses the five-channel Plant spectrum."""
@@ -564,7 +681,11 @@ class Device:
 
     def light_mode(self) -> str:
         """Return the native Home Assistant colour mode for this fixture."""
-        return "rgb" if self.uses_plant_spectrum() or self.uses_marine_spectrum() else "rgbw"
+        if self.spectrum_profile() is None:
+            return "brightness"
+        if self.uses_plant_spectrum() or self.uses_marine_spectrum():
+            return "rgb"
+        return "rgb_white"
 
     def master_brightness(self) -> int:
         """Overall brightness as the brightest supported channel."""
@@ -578,31 +699,74 @@ class Device:
         return round(self.master_brightness() / 100 * 255)
 
     def light_rgb_255(self) -> tuple[int, int, int]:
-        """Return a five-channel spectrum as an RGB colour for Home Assistant."""
+        """Return a five-channel APK spectrum as an sRGB colour."""
         if self._commanded_state_matches() and self._commanded_rgb is not None:
             return self._commanded_rgb
 
-        mix_r = mix_g = mix_b = 0.0
-        channel_rgb = MARINE_CHANNEL_RGB if self.uses_marine_spectrum() else PLANT_CHANNEL_RGB
-        for channel, (channel_r, channel_g, channel_b) in channel_rgb.items():
-            weight = max(0, min(100, int(self.values.get(channel, 0)))) / 100
-            mix_r += channel_r * weight
-            mix_g += channel_g * weight
-            mix_b += channel_b * weight
-        peak = max(mix_r, mix_g, mix_b, 1e-6)
-        return (
-            max(0, min(255, round(mix_r / peak * 255))),
-            max(0, min(255, round(mix_g / peak * 255))),
-            max(0, min(255, round(mix_b / peak * 255))),
+        profile = self.spectrum_profile()
+        if profile is None:
+            return (0, 0, 0)
+        return channel_percentages_to_rgb(
+            profile,
+            tuple(int(self.values.get(channel, 0)) for channel in self.numbers()),
         )
 
-    def light_rgbw_255(self) -> tuple[int, int, int, int]:
-        """Return AquaSky physical channels as a normalized RGBW colour."""
-        if self._commanded_state_matches() and self._commanded_rgbw is not None:
-            return self._commanded_rgbw
-        channels = [int(self.values.get(channel, 0)) for channel in AQUASKY_NUMBERS]
-        peak = max(*channels, 1)
-        return tuple(round(value / peak * 255) for value in channels)  # type: ignore[return-value]
+    def aquasky_white_mode(self) -> bool:
+        """Return whether an AquaSky is using only its independent white channel."""
+        return (
+            all(int(self.values.get(channel, 0)) == 0 for channel in AQUASKY_NUMBERS[:3])
+            and int(self.values.get("channel_4", 0)) > 0
+        )
+
+    def aquasky_rgb_255(self) -> tuple[int, int, int]:
+        """Return AquaSky's APK channel state as one Home Assistant RGB colour."""
+        if self._commanded_state_matches() and self._commanded_rgb is not None:
+            return self._commanded_rgb
+        profile = self.spectrum_profile()
+        if profile is None:
+            return (0, 0, 0)
+        percentages = tuple(int(self.values.get(channel, 0)) for channel in AQUASKY_NUMBERS)
+        # FluvalConnect names channel 4 Pure White. Report that native mode as
+        # neutral RGB so Home Assistant's single colour picker shows white.
+        if percentages[3] > 0 and not any(percentages[:3]):
+            return (255, 255, 255)
+        return channel_percentages_to_rgb(
+            profile,
+            percentages,
+        )
+
+    def channels_from_aquasky_rgb(
+        self,
+        rgb: tuple[int, int, int],
+        brightness: int,
+    ) -> dict[str, int]:
+        """Translate HA RGB to AquaSky's APK-defined RGBW emitters."""
+        # Home Assistant's colour wheel expresses neutral white as equal RGB.
+        # Use Fluval's much brighter dedicated Pure White emitter for that
+        # achromatic request. Chromatic requests fit only R/G/B so pastel
+        # colours cannot be washed out by the physical white bank.
+        # HA's frontend can quantize a neutral picker selection a few counts
+        # away from exact equality (for example 255/255/250). Treat that tiny
+        # chroma as neutral without collapsing genuinely pastel colours.
+        if max(rgb) > 0 and max(rgb) - min(rgb) <= AQUASKY_NEUTRAL_RGB_TOLERANCE:
+            return self.channels_from_aquasky_white(brightness)
+        profile = self.spectrum_profile()
+        if profile is None:
+            return {channel: 0 for channel in AQUASKY_NUMBERS}
+        levels = rgb_to_channel_percentages(profile, rgb, brightness, channel_count=3)
+        return {
+            **dict(zip(AQUASKY_NUMBERS[:3], levels, strict=True)),
+            "channel_4": 0,
+        }
+
+    def channels_from_aquasky_white(self, brightness: int) -> dict[str, int]:
+        """Map neutral HA RGB to only the AquaSky Pure White channel."""
+        return {
+            "channel_1": 0,
+            "channel_2": 0,
+            "channel_3": 0,
+            "channel_4": self._ha_component_to_percent(255, brightness),
+        }
 
     @staticmethod
     def _ha_component_to_percent(component: int, brightness: int) -> int:
@@ -611,100 +775,28 @@ class Device:
         brightness = max(0, min(255, int(brightness)))
         return max(0, min(100, round(component / 255 * brightness / 255 * 100)))
 
-    def channels_from_rgbw(
-        self,
-        rgbw: tuple[int, int, int, int],
-        brightness: int,
-    ) -> dict[str, int]:
-        """Map an HA RGBW colour directly onto AquaSky channels."""
-        channels = {
-            channel: self._ha_component_to_percent(component, brightness)
-            for channel, component in zip(AQUASKY_NUMBERS, rgbw, strict=True)
-        }
-        # RGBW has no fifth component. Preserve a fifth non-Plant channel when
-        # a profile exposes one instead of silently zeroing it.
-        if "channel_5" in self.numbers():
-            channels["channel_5"] = int(self.values.get("channel_5", 0))
-        return channels
-
     def channels_from_rgb(
         self,
         rgb: tuple[int, int, int],
         brightness: int,
     ) -> dict[str, int]:
-        """Translate HA RGB into the active five-channel spectral layout."""
-        if self.uses_marine_spectrum():
-            return self._marine_channels_from_rgb(rgb, brightness)
-
-        red = max(0, min(255, int(rgb[0]))) / 255
-        green = max(0, min(255, int(rgb[1]))) / 255
-        blue = max(0, min(255, int(rgb[2]))) / 255
-        scale = max(0, min(255, int(brightness))) / 255
-
-        white = min(red, green, blue)
-        remaining_red = red - white
-        remaining_green = green - white
-        remaining_blue = blue - white
-        chroma = max(remaining_red, remaining_green, remaining_blue)
-        warmth = red / (red + blue + 1e-6)
-        white_weight = 0.0 if chroma >= 0.85 else (1.0 - chroma) * 0.55
-
-        def percent(value: float) -> int:
-            return max(0, min(100, round(value * scale * 100)))
-
-        return {
-            "channel_1": percent(remaining_red),
-            "channel_2": percent(remaining_blue),
-            "channel_3": percent(white * white_weight * (0.70 * (1.0 - warmth) + 0.15)),
-            "channel_4": percent(remaining_green * 0.85 + white * 0.45 * white_weight),
-            "channel_5": percent(white * white_weight * (0.70 * warmth + 0.15)),
-        }
-
-    def _marine_channels_from_rgb(
-        self,
-        rgb: tuple[int, int, int],
-        brightness: int,
-    ) -> dict[str, int]:
-        """Translate HA RGB into Pink/Cyan/Blue/Purple/Cold White levels."""
-        red = max(0, min(255, int(rgb[0]))) / 255
-        green = max(0, min(255, int(rgb[1]))) / 255
-        blue = max(0, min(255, int(rgb[2]))) / 255
-        scale = max(0, min(255, int(brightness))) / 255
-
-        cold_white = min(red, green, blue)
-        remaining_red = red - cold_white
-        remaining_green = green - cold_white
-        remaining_blue = blue - cold_white
-
-        # Marine fixtures have no green-only emitter. Cyan is the closest
-        # native channel, while shared red/blue energy maps to Purple.
-        cyan = remaining_green
-        remaining_blue = max(0.0, remaining_blue - cyan)
-        purple = min(remaining_red, remaining_blue)
-        pink = remaining_red - purple
-        blue_level = remaining_blue - purple
-
-        def percent(value: float) -> int:
-            return max(0, min(100, round(value * scale * 100)))
-
-        return {
-            "channel_1": percent(pink),
-            "channel_2": percent(cyan),
-            "channel_3": percent(blue_level),
-            "channel_4": percent(purple),
-            "channel_5": percent(cold_white),
-        }
+        """Fit HA RGB to the APK-measured five-channel spectrum."""
+        profile = self.spectrum_profile()
+        if profile is None:
+            return {channel: 0 for channel in self.numbers()}
+        levels = rgb_to_channel_percentages(profile, rgb, brightness)
+        return dict(zip(self.numbers(), levels, strict=True))
 
     def remember_commanded_light(
         self,
         channels: dict[str, int],
         *,
         rgb: tuple[int, int, int] | None = None,
-        rgbw: tuple[int, int, int, int] | None = None,
         brightness: int,
     ) -> None:
         """Remember the exact HA colour while device channels still match it."""
         self._commanded_channels = {channel: max(0, min(100, int(channels[channel]))) for channel in self.numbers()}
+        self._commanded_at = monotonic()
         self._commanded_brightness = max(1, min(255, int(brightness)))
         self._commanded_rgb = (
             (
@@ -715,35 +807,33 @@ class Device:
             if rgb is not None
             else None
         )
-        self._commanded_rgbw = (
-            (
-                max(0, min(255, int(rgbw[0]))),
-                max(0, min(255, int(rgbw[1]))),
-                max(0, min(255, int(rgbw[2]))),
-                max(0, min(255, int(rgbw[3]))),
-            )
-            if rgbw is not None
-            else None
-        )
 
     def clear_commanded_light(self) -> None:
         """Forget a cached HA colour after a non-light channel change."""
         self._commanded_rgb = None
-        self._commanded_rgbw = None
         self._commanded_brightness = None
         self._commanded_channels = None
+        self._commanded_at = None
 
     def _commanded_state_matches(self) -> bool:
-        """Return whether current decoded channels still match the HA command."""
+        """Return whether a locally commanded colour is still authoritative."""
         if self._commanded_channels is None:
             return False
-        return all(int(self.values.get(channel, 0)) == value for channel, value in self._commanded_channels.items())
+        if all(int(self.values.get(channel, -1)) == value for channel, value in self._commanded_channels.items()):
+            return True
+        # Classic controllers can emit one pre-command status notification
+        # immediately after accepting 6804.  Keep only a short grace period;
+        # later device changes must replace the cached HA colour.
+        return self._commanded_at is not None and monotonic() - self._commanded_at < 2.0
 
+    @serialized_device_command
     async def async_apply_light_channels(self, values: dict[str, int]) -> bool:
         """Apply colour channels and ensure the physical fixture is powered on."""
         if not await self.async_set_channels(values):
             return False
         self.clear_commanded_light()
+        if not any(values.values()):
+            return True
         if not self.values.get("led_on_off"):
             return await self.async_set_switch("led_on_off", True)
         return True
@@ -756,8 +846,7 @@ class Device:
                 return False
         else:
             profile = (self.lamp_profile or LAMP_PROFILE_AUTO).lower()
-            identity = f"{self.name} {self.model}".lower().replace(" ", "")
-            if profile not in (LAMP_PROFILE_AQUASKY, LAMP_PROFILE_AQUASKY3) and "aquasky" not in identity:
+            if profile not in (LAMP_PROFILE_AQUASKY, LAMP_PROFILE_AQUASKY3):
                 return False
         if self.client is not None and self.client.command_write_uuid:
             return self.client.command_write_uuid.lower().startswith("00001001")
@@ -787,20 +876,14 @@ class Device:
         product = product_from_id(self.product_id)
         if product is not None:
             return product.native_effect_count in (4, 11)
-        if self.lamp_profile == LAMP_PROFILE_AQUASKY3:
-            return True
-        identity = f"{self.name} {self.model}".lower().replace(" ", "")
-        return "aquasky" in identity
+        return self.lamp_profile == LAMP_PROFILE_AQUASKY3
 
     def supports_plant_pro_effects(self) -> bool:
         """Return whether available evidence identifies a four-effect controller."""
         product = product_from_id(self.product_id)
         if product is not None:
             return product.native_effect_count == 4
-        if self.lamp_profile == LAMP_PROFILE_PLANT_PRO:
-            return True
-        identity = f"{self.name} {self.model}".lower().replace(" ", "")
-        return "plantpro" in identity or "plant4.0" in identity
+        return self.lamp_profile == LAMP_PROFILE_PLANT_PRO
 
     def uses_four_effect_catalogue(self) -> bool:
         """Return whether the APK assigns this product the four-effect catalogue."""
@@ -814,31 +897,42 @@ class Device:
         """Resolve a wire effect ID using this product's APK catalogue."""
         return four_effect_name(effect_code) if self.uses_four_effect_catalogue() else effect_name(effect_code)
 
+    def _store_native_effect_code(self, effect_code: int) -> bool:
+        """Store only the APK's explicit off sentinel or a catalogued effect."""
+        if effect_code == 0:
+            self.values["effect"] = None
+            return True
+        effect = self._native_effect_name(effect_code)
+        if effect is None:
+            return False
+        self.values["effect"] = effect
+        return True
+
     def _channel_snapshot(self) -> dict[str, int]:
         """Return the current supported static channel values."""
         return {channel: int(self.values.get(channel, 0)) for channel in self.numbers()}
 
     def _channels_after_effect(self) -> dict[str, int]:
-        """Return a useful static channel mix for leaving an effect."""
+        """Return the last known static channel mix for leaving an effect."""
         targets = self._effect_restore_channels or self._channel_snapshot()
-        if any(targets.values()):
-            return dict(targets)
-        targets = {channel: 0 for channel in self.numbers()}
-        targets["channel_4"] = 100
-        return targets
+        # The APK never invents a full-brightness neutral channel when no
+        # static state exists. Preserve an exact known snapshot, or write the
+        # exact all-zero manual state and let the normal power path switch off.
+        return dict(targets)
 
     def _clear_effect_state(self) -> None:
         """Clear controller-effect state after a successful static command."""
         self.values["effect"] = None
         self._effect_restore_channels = None
 
+    @serialized_device_command
     async def async_set_effect(self, effect: str) -> bool:
         """Start one APK-native effect on a supported Fluval controller."""
         if not await self._async_prepare_command():
             _LOGGER.warning("Cannot set Fluval effect before BLE device is available")
             return False
 
-        plant_pro = self._uses_plant_pro_protocol()
+        spp = self._uses_spp_protocol()
         facebd = self._uses_wifi_protocol()
         effect_code = self._native_effect_id(effect)
         if effect_code is None:
@@ -846,7 +940,7 @@ class Device:
         if facebd and not self.supports_facebd_effects():
             _LOGGER.warning("FACEBD weather effects require an AquaSky controller identity")
             return False
-        if not plant_pro and not facebd and not self.supports_classic_effects():
+        if not spp and not facebd and not self.supports_classic_effects():
             _LOGGER.warning(
                 "Classic weather effects are not valid for Fluval transport %s",
                 self.client.command_write_uuid if self.client else None,
@@ -864,7 +958,7 @@ class Device:
         if self.values.get("mode") != "manual":
             packets.append(
                 protocol.spp_mode_packet(MODE_TO_CODE["manual"])
-                if plant_pro
+                if spp
                 else protocol.wifi_mode_packet(MODE_TO_CODE["manual"])
                 if facebd
                 else protocol.old_mode_packet(MODE_TO_CODE["manual"])
@@ -872,14 +966,18 @@ class Device:
         if not self.values.get("led_on_off"):
             packets.append(
                 protocol.spp_switch_packet(True)
-                if plant_pro
+                if spp
                 else protocol.wifi_switch_packet(True)
                 if facebd
                 else protocol.old_switch_packet(True)
             )
+        product = product_from_id(self.product_id)
         packets.append(
-            protocol.spp_effect_packet(effect_code)
-            if plant_pro
+            protocol.spp_effect_packet(
+                effect_code,
+                maximum_effect_id=product.native_effect_count if product is not None else 4,
+            )
+            if spp
             else protocol.wifi_effect_packet(effect_code)
             if facebd
             else protocol.old_weather_effect_packet(effect_code)
@@ -899,6 +997,7 @@ class Device:
             handler()
         return True
 
+    @serialized_device_command
     async def async_set_native_auto_schedule(
         self,
         schedule: dict[str, Any],
@@ -906,36 +1005,77 @@ class Device:
         activate: bool = True,
     ) -> bool:
         """Store a protocol-native Auto schedule in the fixture."""
+        channel_count = self._resolved_channel_count()
+        try:
+            day_levels = list(schedule["day_levels"])
+            night_levels = list(schedule["night_levels"])
+            sunrise = tuple(schedule["sunrise"])
+            sunset = tuple(schedule["sunset"])
+            raw_sleep = schedule.get("sleep")
+            sleep = None if raw_sleep is None else tuple(raw_sleep)
+        except (KeyError, TypeError):
+            self._set_diagnostic_error(
+                "invalid_native_schedule",
+                "Auto schedule fields are incomplete or invalid",
+            )
+            return False
+        if (
+            len(day_levels) != len(night_levels)
+            or len(day_levels) != channel_count
+            or any(
+                isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= 100
+                for level in (*day_levels, *night_levels)
+            )
+        ):
+            self._set_diagnostic_error(
+                "invalid_native_schedule",
+                f"This fixture requires exactly {channel_count} day and night channel levels",
+            )
+            return False
+        if not self._valid_schedule_time_with_ramp(sunrise) or not self._valid_schedule_time_with_ramp(sunset):
+            self._set_diagnostic_error(
+                "invalid_native_schedule",
+                "Auto sunrise and sunset require a valid time and a 0-240 minute ramp",
+            )
+            return False
+        if sleep is not None and not self._valid_schedule_time(sleep):
+            self._set_diagnostic_error(
+                "invalid_native_schedule",
+                "Auto sleep time is outside the 24-hour range",
+            )
+            return False
+
         if not await self._async_prepare_command():
             return False
 
         if self._uses_wifi_protocol():
             packet = protocol.wifi_auto_schedule_packet(
-                sunrise=schedule["sunrise"],
-                sunset=schedule["sunset"],
-                sleep=schedule.get("sleep"),
-                day_levels=schedule["day_levels"],
-                night_levels=schedule["night_levels"],
-                channel_count=self._resolved_channel_count(),
+                sunrise=sunrise,
+                sunset=sunset,
+                sleep=sleep,
+                day_levels=day_levels,
+                night_levels=night_levels,
+                channel_count=channel_count,
             )
             native_protocol = "facebd"
-        elif self._uses_plant_pro_protocol():
+        elif self._uses_spp_protocol():
             packet = protocol.spp_auto_schedule_packet(
-                sunrise=schedule["sunrise"],
-                sunset=schedule["sunset"],
-                sleep=schedule.get("sleep"),
-                day_levels=schedule["day_levels"],
-                night_levels=schedule["night_levels"],
+                sunrise=sunrise,
+                sunset=sunset,
+                sleep=sleep,
+                day_levels=day_levels,
+                night_levels=night_levels,
+                channel_count=channel_count,
             )
-            native_protocol = "plant_pro"
+            native_protocol = "spp"
         else:
             packet = protocol.old_auto_schedule_packet(
-                sunrise=schedule["sunrise"],
-                sunset=schedule["sunset"],
-                sleep=schedule.get("sleep"),
-                day_levels=schedule["day_levels"],
-                night_levels=schedule["night_levels"],
-                channel_count=self._resolved_channel_count(),
+                sunrise=sunrise,
+                sunset=sunset,
+                sleep=sleep,
+                day_levels=day_levels,
+                night_levels=night_levels,
+                channel_count=channel_count,
             )
             native_protocol = "classic"
 
@@ -958,14 +1098,39 @@ class Device:
         self._notify_diagnostics_throttled()
         return True
 
+    @staticmethod
+    def _valid_schedule_time(value: tuple[Any, ...]) -> bool:
+        """Return whether a schedule tuple is an APK-valid hour and minute."""
+        return (
+            len(value) == 2
+            and not isinstance(value[0], bool)
+            and isinstance(value[0], int)
+            and not isinstance(value[1], bool)
+            and isinstance(value[1], int)
+            and 0 <= value[0] <= 23
+            and 0 <= value[1] <= 59
+        )
+
+    @classmethod
+    def _valid_schedule_time_with_ramp(cls, value: tuple[Any, ...]) -> bool:
+        """Return whether a schedule tuple also has an APK-valid ramp."""
+        return (
+            len(value) == 3
+            and cls._valid_schedule_time(value[:2])
+            and not isinstance(value[2], bool)
+            and isinstance(value[2], int)
+            and 0 <= value[2] <= 240
+        )
+
     def native_pro_schedule_limits(self) -> tuple[str, int, int]:
         """Return the APK-defined Professional-schedule limits for this fixture."""
         if self._uses_wifi_protocol():
             return "facebd", protocol.WIFI_MIN_PRO_POINTS, protocol.WIFI_MAX_PRO_POINTS
-        if self._uses_plant_pro_protocol():
-            return "plant_pro", protocol.SPP_MIN_PRO_POINTS, protocol.SPP_MAX_PRO_POINTS
+        if self._uses_spp_protocol():
+            return "spp", protocol.SPP_MIN_PRO_POINTS, protocol.SPP_MAX_PRO_POINTS
         return "classic", protocol.OLD_MIN_PRO_POINTS, protocol.OLD_MAX_PRO_POINTS
 
+    @serialized_device_command
     async def async_set_native_pro_schedule(
         self,
         points: list[dict[str, Any]],
@@ -973,16 +1138,72 @@ class Device:
         activate: bool = True,
     ) -> bool:
         """Store a protocol-native Professional schedule in the fixture."""
-        if points and all("time" not in point and "levels" in point for point in points):
-            normalized = [
-                {
-                    "minute": (int(point["hour"]) * 60) + int(point["minute"]),
-                    **{f"channel_{index}": int(level) for index, level in enumerate(point["levels"], start=1)},
-                }
-                for point in points
-            ]
-        else:
-            normalized = self._normalize_schedule_points(points)
+        channel_count = self._resolved_channel_count()
+        try:
+            if points and all("time" not in point and "levels" in point for point in points):
+                raw_levels = [list(point["levels"]) for point in points]
+                level_widths = {len(levels) for levels in raw_levels}
+                if any(
+                    len(levels) != channel_count
+                    or any(
+                        isinstance(level, bool) or not isinstance(level, int) or not 0 <= level <= 100
+                        for level in levels
+                    )
+                    for levels in raw_levels
+                ):
+                    self._set_diagnostic_error(
+                        "invalid_native_schedule",
+                        f"This fixture requires exactly {channel_count} channel levels at every Professional point",
+                    )
+                    return False
+                if len(level_widths) != 1:
+                    self._set_diagnostic_error(
+                        "invalid_native_schedule",
+                        "All Professional points must use the same fixture channel count",
+                    )
+                    return False
+                raw_times = [(point["hour"], point["minute"]) for point in points]
+                if any(
+                    isinstance(hour, bool)
+                    or not isinstance(hour, int)
+                    or isinstance(minute, bool)
+                    or not isinstance(minute, int)
+                    or not 0 <= hour <= 23
+                    or not 0 <= minute <= 59
+                    for hour, minute in raw_times
+                ):
+                    self._set_diagnostic_error(
+                        "invalid_native_schedule",
+                        "Professional schedule points contain a time outside the 24-hour range",
+                    )
+                    return False
+                normalized = [
+                    {
+                        "minute": (hour * 60) + minute,
+                        **{
+                            f"channel_{index}": int(level)
+                            for index, level in enumerate(levels, start=1)
+                        },
+                    }
+                    for (hour, minute), levels in zip(raw_times, raw_levels, strict=True)
+                ]
+            else:
+                normalized = self._normalize_schedule_points(points)
+        except (KeyError, TypeError, ValueError):
+            self._set_diagnostic_error(
+                "invalid_native_schedule",
+                "Professional schedule points contain an invalid time or channel value",
+            )
+            return False
+
+        minutes = [int(point["minute"]) for point in normalized]
+        if any(not 0 <= minute < DAY_MINUTES for minute in minutes) or len(set(minutes)) != len(minutes):
+            self._set_diagnostic_error(
+                "invalid_native_schedule",
+                "Professional schedule points require unique times within one day",
+            )
+            return False
+        normalized.sort(key=lambda point: point["minute"])
 
         if not protocol.SPP_MIN_PRO_POINTS <= len(normalized) <= protocol.SPP_MAX_PRO_POINTS:
             self._set_diagnostic_error(
@@ -1007,16 +1228,19 @@ class Device:
                 normalized,
                 channel_count=self._resolved_channel_count(),
             )
-        elif native_protocol == "plant_pro":
+        elif native_protocol == "spp":
             spp_points = [
                 {
                     "hour": point["minute"] // 60,
                     "minute": point["minute"] % 60,
-                    "levels": [point.get(f"channel_{index}", 0) for index in range(1, 6)],
+                    "levels": [point.get(f"channel_{index}", 0) for index in range(1, channel_count + 1)],
                 }
                 for point in normalized
             ]
-            packet = protocol.spp_pro_schedule_packet(spp_points)
+            packet = protocol.spp_pro_schedule_packet(
+                spp_points,
+                channel_count=channel_count,
+            )
         else:
             packet = protocol.old_pro_schedule_packet(
                 normalized,
@@ -1041,14 +1265,20 @@ class Device:
         self._notify_diagnostics_throttled()
         return True
 
+    @serialized_device_command
     async def async_set_native_effect_schedule(self, windows: list[dict[str, Any]]) -> bool:
         """Store APK-native timed weather-effect windows in the fixture."""
         if not await self._async_prepare_command():
             return False
 
-        if self._uses_plant_pro_protocol():
-            native_protocol = "plant_pro"
-            packet_builder = protocol.spp_effect_schedule_packet
+        if self._uses_spp_protocol():
+            native_protocol = "spp"
+            product = product_from_id(self.product_id)
+            maximum_effect_id = product.native_effect_count if product is not None else 4
+            packet_builder = partial(
+                protocol.spp_effect_schedule_packet,
+                maximum_effect_id=maximum_effect_id,
+            )
         elif self._uses_wifi_protocol() and self.supports_facebd_effects():
             native_protocol = "facebd"
             packet_builder = protocol.wifi_effect_schedule_packet
@@ -1058,7 +1288,7 @@ class Device:
         else:
             self._set_diagnostic_error(
                 "unsupported_transport",
-                "Timed native effects require a supported classic, AquaSky 3.0/FACEBD, or Plant Pro controller",
+                "Timed native effects require a supported classic, FACEBD, or current FFF0/SPP controller",
             )
             return False
 
@@ -1102,17 +1332,19 @@ class Device:
                 "native_effect_schedule_packet": packet.hex(),
             }
         )
-        if native_protocol == "plant_pro":
+        if native_protocol == "spp" and self.uses_plant_spectrum():
             self.diagnostics["plant_pro_effect_schedule"] = normalized
         self._notify_diagnostics_throttled()
         return True
 
+    @serialized_device_command
     async def async_stop_effect(self) -> bool:
-        """Stop a native effect by restoring the preceding static channel mix."""
+        """Stop a native effect by returning to the last known static state."""
         if not self.values.get("effect"):
             return True
         return await self.async_set_channels(self._channels_after_effect(), force=True)
 
+    @serialized_device_command
     async def async_set_master_brightness(self, level: int) -> bool:
         """Scale all supported channels to level, preserving ratios."""
         level = min(100, max(0, round(level / 10) if level > 100 else int(level)))
@@ -1140,6 +1372,10 @@ class Device:
         """List of diagnostics sensors provided by the device."""
         return list(SENSORS)
 
+    def is_persistent_connection(self) -> bool:
+        """Return whether Home Assistant keeps the GATT session open."""
+        return self._active_time == 0
+
     def supports_facebd_dst_control(self) -> bool:
         """Return whether this fixture uses FluvalConnect's FACEBD DST setting."""
         return self._uses_wifi_protocol()
@@ -1160,14 +1396,17 @@ class Device:
             value = self.values.get(attr)
             return Attribute(is_on=value) if isinstance(value, bool) else Attribute()
         if attr == "rssi":
+            if self.is_persistent_connection():
+                return Attribute(
+                    native_unit_of_measurement="dBm",
+                    extra={
+                        "last_updated": self.conn_info.get("rssi_updated_at"),
+                    },
+                )
             return Attribute(
                 value=self.conn_info.get("rssi"),
                 native_unit_of_measurement="dBm",
                 extra={
-                    "source_name": self.conn_info.get("advertisement_source"),
-                    "source_address": self.conn_info.get("advertisement_source_address"),
-                    "source_type": self.conn_info.get("advertisement_source_type"),
-                    "last_advertisement": self.conn_info.get("rssi_updated_at"),
                     "last_updated": self.conn_info.get("rssi_updated_at"),
                 },
             )
@@ -1175,30 +1414,27 @@ class Device:
             return Attribute(
                 value=self.conn_info.get("active_connection_source") if self.connected else None,
                 extra={
-                    "source_name": self.conn_info.get("active_connection_source"),
-                    "source_address": self.conn_info.get("active_connection_source_address"),
                     "source_type": self.conn_info.get("active_connection_source_type"),
                     "connected_at": self.conn_info.get("active_connection_connected_at"),
                     "gatt_connected": self.connected,
                 },
             )
-        if attr == "advertisement_source":
-            return Attribute(
-                value=self.conn_info.get("advertisement_source"),
-                extra={
-                    "source_name": self.conn_info.get("advertisement_source"),
-                    "source_address": self.conn_info.get("advertisement_source_address"),
-                    "source_type": self.conn_info.get("advertisement_source_type"),
-                    "last_updated": self.conn_info.get("advertisement_updated_at"),
-                },
-            )
+        if attr == "connection_mode":
+            if self.is_persistent_connection():
+                return Attribute(value="Persistent")
+            suffix = "second" if self._active_time == 1 else "seconds"
+            return Attribute(value=f"{self._active_time} {suffix}")
         if attr == "last_seen":
+            if self.is_persistent_connection():
+                if not self.connected:
+                    return Attribute()
+                return Attribute(value=self.conn_info.get("active_connection_connected_at"))
             return Attribute(value=self.conn_info.get("last_seen"))
         return Attribute()
 
     def register_update(self, attr: str, handler: Callable):
         """Register handlers for updates."""
-        if attr in ("connection", "rssi", "last_seen", "active_connection_source", "advertisement_source"):
+        if attr in ("connection", "rssi", "last_seen", "active_connection_source"):
             self.updates_connect.append(handler)
         else:
             self.updates_component.append(handler)
@@ -1207,16 +1443,20 @@ class Device:
         """Remove a previously registered update handler."""
         target = (
             self.updates_connect
-            if attr in ("connection", "rssi", "last_seen", "active_connection_source", "advertisement_source")
+            if attr in ("connection", "rssi", "last_seen", "active_connection_source")
             else self.updates_component
         )
         with contextlib.suppress(ValueError):
             target.remove(handler)
 
+    @serialized_device_command
     async def async_set_value(self, attr: str, value: int) -> bool:
         """Set values received by entities such as numbers and switches."""
         if attr.startswith("channel_"):
-            return await self.async_set_channels({attr: int(value)})
+            return await self.async_set_channels(
+                {attr: int(value)},
+                restore_mode_on_zero=True,
+            )
 
         _LOGGER.debug("Value %s changed to %s", attr, value)
         return False
@@ -1228,8 +1468,56 @@ class Device:
         transition: int = 0,
         step_seconds: int = TRANSITION_STEP_SECONDS,
         force: bool = False,
+        restore_mode_on_zero: bool = False,
     ) -> bool:
         """Set multiple channel values, optionally ramping over time."""
+        if transition <= 0:
+            async with self.command_transaction():
+                return await self._async_set_channels_now(
+                    values,
+                    force=force,
+                    restore_mode_on_zero=restore_mode_on_zero,
+                )
+
+        async with self.command_transaction():
+            generation = self._command_generation
+            channels = self.numbers()
+            targets = {
+                channel: max(0, min(100, int(values.get(channel, self.values[channel])))) for channel in channels
+            }
+            start_values = {channel: int(self.values[channel]) for channel in channels}
+
+        steps = max(1, int(transition / max(1, step_seconds)))
+        for step in range(1, steps + 1):
+            async with self.command_transaction(supersede_transition=False):
+                if generation != self._command_generation:
+                    self.diagnostics["status"] = "transition_interrupted"
+                    self._notify_diagnostics_throttled()
+                    return True
+                ratio = step / steps
+                step_values = {
+                    channel: round(start_values[channel] + ((targets[channel] - start_values[channel]) * ratio))
+                    for channel in channels
+                }
+                if not await self._async_set_channels_now(
+                    step_values,
+                    force=force,
+                    restore_mode_on_zero=restore_mode_on_zero,
+                ):
+                    return False
+            if step < steps:
+                await asyncio.sleep(step_seconds)
+        return True
+
+    async def _async_set_channels_now(
+        self,
+        values: dict[str, int],
+        *,
+        force: bool = False,
+        restore_mode_on_zero: bool = False,
+    ) -> bool:
+        """Apply one channel frame inside an active command transaction."""
+        self.cancel_channel_mode_restore(clear_saved_mode=not restore_mode_on_zero)
         channels = self.numbers()
         effect_active = bool(self.values.get("effect"))
         force = force or effect_active
@@ -1250,9 +1538,17 @@ class Device:
             return False
 
         if self.values.get("mode") != "manual":
+            previous_mode = cast(Any, self.values.get("mode"))
+            if (
+                restore_mode_on_zero
+                and self._restore_previous_mode
+                and isinstance(previous_mode, str)
+                and previous_mode in {"automatic", "professional"}
+            ):
+                self._channel_restore_mode = previous_mode
             if self._uses_wifi_protocol():
                 ok = await self._async_send_packet(protocol.wifi_mode_packet(MODE_TO_CODE["manual"]))
-            elif self._uses_plant_pro_protocol():
+            elif self._uses_spp_protocol():
                 ok = await self._async_send_packet(protocol.spp_mode_packet(MODE_TO_CODE["manual"]))
             else:
                 ok = await self._async_send_packet(protocol.old_mode_packet(MODE_TO_CODE["manual"]))
@@ -1261,43 +1557,25 @@ class Device:
                 return False
             self.values["mode"] = "manual"
 
-        if transition <= 0:
-            for channel, value in targets.items():
-                self.values[channel] = value
-            ok = await self._async_send_channel_state(
-                old_values,
-                force_power=force,
-                single_channel=single_channel,
-            )
-            if ok and effect_active:
+        for channel, value in targets.items():
+            self.values[channel] = value
+        ok = await self._async_send_channel_state(
+            old_values,
+            force_power=force,
+            single_channel=single_channel,
+        )
+        if ok:
+            # Physical channel values are authoritative. Forget any cached RGB
+            # request and refresh both exact sliders and the light's best-fit
+            # display state without writing that approximation back.
+            self.clear_commanded_light()
+            if effect_active:
                 self._clear_effect_state()
-                for handler in self.updates_component:
-                    handler()
-            return ok
-
-        steps = max(1, int(transition / max(1, step_seconds)))
-        start_values = {channel: int(old_values[channel]) for channel in channels}
-        for step in range(1, steps + 1):
-            ratio = step / steps
-            for channel in channels:
-                start = start_values[channel]
-                end = targets[channel]
-                self.values[channel] = round(start + ((end - start) * ratio))
-            if not await self._async_send_channel_state(
-                old_values,
-                force_power=force,
-                single_channel=single_channel,
-            ):
-                self.values = old_values
-                return False
-            if step < steps:
-                await asyncio.sleep(step_seconds)
-
-        if effect_active:
-            self._clear_effect_state()
             for handler in self.updates_component:
                 handler()
-        return True
+            if restore_mode_on_zero and not any(targets.values()):
+                self._schedule_channel_mode_restore()
+        return ok
 
     async def _async_send_channel_state(
         self,
@@ -1325,7 +1603,7 @@ class Device:
                 ok = await self._async_send_packet(protocol.wifi_switch_packet(False))
                 if ok:
                     self.values["led_on_off"] = False
-        elif self._uses_plant_pro_protocol():
+        elif self._uses_spp_protocol():
             any_channel_on = any(self._channel_values())
             if any_channel_on and (force_power or not self.values["led_on_off"]):
                 self.values["led_on_off"] = True
@@ -1343,7 +1621,19 @@ class Device:
                 if ok:
                     self.values["led_on_off"] = False
         else:
+            any_channel_on = any(self._channel_values())
+            # Establish power before applying the 6804 channel frame, matching
+            # the app's switch-then-manual-colour ordering for an off fixture.
+            if any_channel_on and (force_power or not self.values["led_on_off"]):
+                if not await self._async_send_packet(protocol.old_switch_packet(True)):
+                    self.values = old_values
+                    return False
+                self.values["led_on_off"] = True
             ok = await self._async_send_packet(protocol.old_all_zone_packet(self._channel_values()))
+            if ok and not any_channel_on and self.values["led_on_off"]:
+                ok = await self._async_send_packet(protocol.old_switch_packet(False))
+                if ok:
+                    self.values["led_on_off"] = False
 
         if not ok:
             self.values = old_values
@@ -1351,6 +1641,7 @@ class Device:
                 handler()
         return ok
 
+    @serialized_device_command
     async def async_preview_schedule(
         self,
         points: list[dict[str, Any]],
@@ -1359,7 +1650,8 @@ class Device:
         step_seconds: int = PREVIEW_STEP_SECONDS,
     ) -> bool:
         """Preview a 24-hour schedule on the real light in compressed time."""
-        await self.async_stop_preview()
+        if not await self.async_stop_preview():
+            return False
         self.preview_restore_values = {channel: int(self.values.get(channel, 0)) for channel in self.numbers()}
         self.preview_restore_mode = (
             self.values.get("mode") if self.values.get("mode") in {"automatic", "professional"} else None
@@ -1367,6 +1659,7 @@ class Device:
         self.preview_task = asyncio.create_task(self._async_preview_schedule(points, duration, step_seconds))
         return True
 
+    @serialized_device_command
     async def async_preview_native_schedule(self, minute: int, schedule_type: str) -> bool:
         """Preview one minute of a schedule already stored by the fixture."""
         if schedule_type not in {"auto", "professional"} or not 0 <= minute < DAY_MINUTES:
@@ -1397,7 +1690,7 @@ class Device:
             self.native_preview_restore_mode = current_mode if current_mode in MODES else "manual"
 
         mode_changed = self.values.get("mode") != target_mode or previous_type not in (None, schedule_type)
-        if mode_changed and (self._uses_wifi_protocol() or self._uses_plant_pro_protocol()):
+        if mode_changed and (self._uses_wifi_protocol() or self._uses_spp_protocol()):
             if not await self._async_send_packet(self._native_mode_packet(target_mode)):
                 if starting:
                     self.native_preview_restore_mode = None
@@ -1407,9 +1700,9 @@ class Device:
         if self._uses_wifi_protocol():
             packet = protocol.wifi_auto_preview_packet(minute)
             native_protocol = "facebd"
-        elif self._uses_plant_pro_protocol():
+        elif self._uses_spp_protocol():
             packet = protocol.spp_schedule_preview_packet(minute)
-            native_protocol = "plant_pro"
+            native_protocol = "spp"
         else:
             levels = self._classic_native_preview_levels(schedule_type, minute)
             if levels is None:
@@ -1436,49 +1729,65 @@ class Device:
         self._notify_diagnostics_throttled()
         return True
 
-    async def async_stop_preview(self) -> bool:
-        """Stop any running editor or fixture-native schedule preview."""
+    @serialized_device_command
+    async def async_stop_preview(self, *, restore: bool = True) -> bool:
+        """Stop any running preview, optionally restoring its preceding state."""
         restored = True
+        had_editor_preview = any(
+            value is not None
+            for value in (
+                self.preview_task,
+                self.preview_restore_mode,
+                self.preview_restore_values,
+            )
+        )
         if self.preview_task and not self.preview_task.done():
             self.preview_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.preview_task
         self.preview_task = None
         restore_mode = self.preview_restore_mode
+        restore_values = self.preview_restore_values
         self.preview_restore_mode = None
-        if restore_mode is not None:
-            self.preview_restore_values = None
+        self.preview_restore_values = None
+        if restore and restore_mode is not None:
             restored = await self.async_select_option("mode", restore_mode)
-        elif self.preview_restore_values:
-            restore_values = self.preview_restore_values
-            self.preview_restore_values = None
+        elif restore and restore_values:
             restored = await self.async_set_channels(restore_values)
+        elif had_editor_preview:
+            self.diagnostics["status"] = "preview_interrupted"
 
         if self.native_preview_active:
             if not await self._async_prepare_command():
                 return False
             if self._uses_wifi_protocol():
                 stopped = await self._async_send_packet(protocol.wifi_auto_preview_packet(None))
-            elif self._uses_plant_pro_protocol():
+            elif self._uses_spp_protocol():
                 stopped = await self._async_send_packet(protocol.spp_schedule_preview_packet(None))
             else:
                 stopped = await self._async_send_packet(protocol.old_auto_preview_packet(None))
             if not stopped:
                 self._set_diagnostic_error("native_preview_stop_failed", "Unable to stop fixture schedule preview")
                 return False
-            if not await self._async_restore_native_preview_mode():
-                self._set_diagnostic_error(
-                    "native_preview_restore_failed", "Preview stopped but fixture mode was not restored"
-                )
-                return False
-            self.diagnostics["status"] = "native_preview_stopped"
+            if restore:
+                if not await self._async_restore_native_preview_mode():
+                    self._set_diagnostic_error(
+                        "native_preview_restore_failed", "Preview stopped but fixture mode was not restored"
+                    )
+                    return False
+                self.diagnostics["status"] = "native_preview_stopped"
+            else:
+                self.native_preview_active = False
+                self.native_preview_schedule_type = None
+                self.native_preview_restore_mode = None
+                self.diagnostics["status"] = "native_preview_interrupted"
             self._notify_diagnostics_throttled()
         return restored
 
     async def _async_restore_native_preview_mode(self) -> bool:
         """Restore the fixture mode saved before native preview."""
         restore_mode = self.native_preview_restore_mode
-        should_restore = self._uses_wifi_protocol() or self._uses_plant_pro_protocol()
+        should_restore = self._uses_wifi_protocol() or self._uses_spp_protocol()
         if restore_mode in MODES and should_restore and self.values.get("mode") != restore_mode:
             if not await self._async_send_packet(self._native_mode_packet(restore_mode)):
                 return False
@@ -1542,16 +1851,18 @@ class Device:
         normalized = []
         for point in points:
             minute = self._parse_time_to_minute(str(point["time"]))
-            channels = {
-                channel: max(0, min(100, int(point.get(channel, point.get(color, 0)))))
-                for channel, color in (
-                    ("channel_1", "red"),
-                    ("channel_2", "green"),
-                    ("channel_3", "blue"),
-                    ("channel_4", "white"),
-                    ("channel_5", "channel_5"),
-                )
-            }
+            channels = {}
+            for channel, color in (
+                ("channel_1", "red"),
+                ("channel_2", "green"),
+                ("channel_3", "blue"),
+                ("channel_4", "white"),
+                ("channel_5", "channel_5"),
+            ):
+                value = point.get(channel, point.get(color, 0))
+                if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
+                    raise ValueError(f"{channel} must be an integer from 0 to 100")
+                channels[channel] = value
             normalized.append({"minute": minute, "time": self._format_minute(minute), **channels})
 
         return sorted(normalized, key=lambda item: item["minute"])
@@ -1672,15 +1983,21 @@ class Device:
     def _parse_time_to_minute(self, value: str) -> int:
         """Parse HH:MM into minutes from midnight."""
         hour, minute = value.split(":", 1)
-        return ((int(hour) % 24) * 60) + int(minute)
+        hour_value = int(hour)
+        minute_value = int(minute)
+        if not 0 <= hour_value <= 23 or not 0 <= minute_value <= 59:
+            raise ValueError("Schedule time is outside the 24-hour range")
+        return (hour_value * 60) + minute_value
 
     def _format_minute(self, minute: int) -> str:
         """Format minutes from midnight as HH:MM."""
         minute %= DAY_MINUTES
         return f"{minute // 60:02d}:{minute % 60:02d}"
 
+    @serialized_device_command
     async def async_set_switch(self, attr: str, value: bool) -> bool:
         """Set switch values and send the updated state to the light."""
+        self.cancel_channel_mode_restore()
         _LOGGER.debug("Switch %s changed to %s", attr, value)
         old_values = dict(self.values)
         self.values[attr] = value
@@ -1691,7 +2008,7 @@ class Device:
 
         if self._uses_wifi_protocol():
             ok = await self._async_send_packet(protocol.wifi_switch_packet(value))
-        elif self._uses_plant_pro_protocol():
+        elif self._uses_spp_protocol():
             ok = await self._async_send_packet(protocol.spp_switch_packet(value))
         else:
             ok = await self._async_send_packet(protocol.old_switch_packet(value))
@@ -1706,6 +2023,7 @@ class Device:
                 handler()
         return ok
 
+    @serialized_device_command
     async def async_set_daylight_saving_time(self, enabled: bool) -> bool:
         """Set the fixture-owned FACEBD daylight-saving flag."""
         if not await self._async_prepare_command():
@@ -1745,6 +2063,26 @@ class Device:
             return None
         return [int(value) for value in presets[slot - 1]]
 
+    def supports_manual_presets(self) -> bool:
+        """Return whether APK product and live transport evidence support P1-P4."""
+        product = product_from_id(self.product_id)
+        if product is not None and product.manual_preset_count != 4:
+            return False
+        if self.client is not None and getattr(self.client, "command_write_uuid", None):
+            return self.client.command_write_uuid.lower().startswith("00001001")
+        if product is not None:
+            return product.manual_preset_count == 4
+
+        service_uuids = [str(uuid).lower() for uuid in self.conn_info.get("service_uuids", [])]
+        return any(uuid.startswith(("00001000", "00001002")) for uuid in service_uuids) and not any(
+            uuid.startswith(("facebd", "0000fff0")) for uuid in service_uuids
+        )
+
+    def manual_preset_available(self, slot: int) -> bool:
+        """Return whether one classic preset has complete fixture readback."""
+        return 1 <= slot <= 4 and self._manual_preset_values(slot) is not None
+
+    @serialized_device_command
     async def async_recall_manual_preset(self, slot: int) -> bool:
         """Apply one fixture-resident classic P1-P4 preset as FluvalConnect does."""
         if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= 4:
@@ -1752,7 +2090,7 @@ class Device:
             return False
         if not await self._async_prepare_command():
             return False
-        if self._uses_wifi_protocol() or self._uses_plant_pro_protocol():
+        if not self.supports_manual_presets():
             self._set_diagnostic_error(
                 "unsupported_manual_preset",
                 "Fixture-resident manual presets are supported only by classic Fluval controllers",
@@ -1788,6 +2126,7 @@ class Device:
         )
         return True
 
+    @serialized_device_command
     async def async_save_manual_preset(self, slot: int) -> bool:
         """Save the current classic channel state in fixture slot P1-P4."""
         if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= 4:
@@ -1795,7 +2134,7 @@ class Device:
             return False
         if not await self._async_prepare_command():
             return False
-        if self._uses_wifi_protocol() or self._uses_plant_pro_protocol():
+        if not self.supports_manual_presets():
             self._set_diagnostic_error(
                 "unsupported_manual_preset",
                 "Fixture-resident manual presets are supported only by classic Fluval controllers",
@@ -1830,6 +2169,7 @@ class Device:
         )
         return True
 
+    @serialized_device_command
     async def async_identify(self) -> bool:
         """Ask the fixture to identify itself using FluvalConnect's Find command."""
         if not await self._async_prepare_command():
@@ -1838,17 +2178,19 @@ class Device:
 
         if self._uses_wifi_protocol():
             packet = protocol.wifi_find_packet()
-        elif self._uses_plant_pro_protocol():
+        elif self._uses_spp_protocol():
             packet = protocol.spp_find_packet()
         else:
             packet = protocol.old_find_packet()
         return await self._async_send_packet(packet)
 
+    @serialized_device_command
     async def async_select_option(self, attr: str, option: str) -> bool:
         """Set select values and send the updated state to the light."""
         if attr != "mode" or option not in MODES:
             return False
 
+        self.cancel_channel_mode_restore()
         _LOGGER.debug("Mode changed to %s", option)
         old_values = dict(self.values)
         self.values[attr] = option
@@ -1859,7 +2201,7 @@ class Device:
 
         if self._uses_wifi_protocol():
             ok = await self._async_send_packet(protocol.wifi_mode_packet(MODE_TO_CODE[option]))
-        elif self._uses_plant_pro_protocol():
+        elif self._uses_spp_protocol():
             ok = await self._async_send_packet(protocol.spp_mode_packet(MODE_TO_CODE[option]))
         else:
             ok = await self._async_send_packet(protocol.old_mode_packet(MODE_TO_CODE[option]))
@@ -1887,6 +2229,7 @@ class Device:
             if not await self._async_finish_clock_sync(state):
                 _LOGGER.warning("Fluval timezone sync failed after connect for %s", self.address)
 
+    @serialized_device_command
     async def async_sync_clock(self, *, force: bool = False) -> bool:
         """Run the APK's clock, state-read, and timezone initialization sequence."""
         if self._clock_synced and not force:
@@ -1922,9 +2265,9 @@ class Device:
         """Send only the fixture clock command used before the APK state read."""
         if self._uses_wifi_protocol():
             packet = protocol.wifi_clock_packet()
-        elif self._uses_plant_pro_protocol():
-            # FluvalConnect treats Plant Pro as a mesh light and writes the
-            # raw 0xCD + local date/time frame to its FFF2 SPP endpoint.
+        elif self._uses_spp_protocol():
+            # FluvalConnect treats current Plant and Reef fixtures as mesh
+            # lights and writes the raw clock frame to their FFF2 endpoint.
             packet = protocol.mesh_clock_packet()
         else:
             packet = protocol.old_clock_packet()
@@ -1950,14 +2293,22 @@ class Device:
             handler()
         return True
 
+    def _uses_spp_protocol(self) -> bool:
+        """Return true for the live current-generation FFF0/SPP profile."""
+        if self.client is None:
+            return False
+        if getattr(self.client, "spp_transport", None) is True:
+            return True
+        return getattr(self.client, "plant_pro_spp", False) is True
+
     def _uses_plant_pro_protocol(self) -> bool:
-        """Return true for the live Plant Pro 4.0 SPP-over-BLE profile."""
-        return bool(self.client is not None and getattr(self.client, "plant_pro_spp", False) is True)
+        """Compatibility alias for the formerly Plant-specific SPP helper."""
+        return self._uses_spp_protocol()
 
     def _uses_wifi_protocol(self) -> bool:
         """Prefer the live GATT profile over advertisement heuristics."""
         if self.client is not None and getattr(self.client, "command_write_uuid", None):
-            if self._uses_plant_pro_protocol():
+            if self._uses_spp_protocol():
                 self.facebd = False
                 return False
             if getattr(self.client, "wifi_facebd", False):
@@ -1978,7 +2329,7 @@ class Device:
         mode_code = MODE_TO_CODE[mode]
         if self._uses_wifi_protocol():
             return protocol.wifi_mode_packet(mode_code)
-        if self._uses_plant_pro_protocol():
+        if self._uses_spp_protocol():
             return protocol.spp_mode_packet(mode_code)
         return protocol.old_mode_packet(mode_code)
 
@@ -2051,7 +2402,7 @@ class Device:
             return None
         if not decoded:
             return None
-        if self._uses_plant_pro_protocol():
+        if self._uses_spp_protocol():
             supported_keys = {
                 protocol.SPP_MODE_KEY,
                 protocol.SPP_SWITCH_KEY,
@@ -2071,14 +2422,29 @@ class Device:
                 protocol.WIFI_SWITCH_KEY,
                 protocol.WIFI_DST_KEY,
                 *(protocol.WIFI_CHANNEL_KEYS[index] for index, _channel in enumerate(self.numbers())),
+                protocol.WIFI_MANUAL_KEY,
+                protocol.WIFI_AUTO_SUNRISE_KEY,
+                protocol.WIFI_AUTO_SUNSET_KEY,
+                protocol.WIFI_AUTO_SLEEP_KEY,
+                protocol.WIFI_AUTO_DAY_LEVELS_KEY,
+                protocol.WIFI_AUTO_NIGHT_LEVELS_KEY,
+                protocol.WIFI_PRO_COUNT_KEY,
+                protocol.WIFI_PRO_TIMES_KEY,
+                protocol.WIFI_PRO_LEVELS_KEY,
+                protocol.WIFI_SCHEDULED_EFFECT_KEY,
             }
-        return {key: value for key, value in decoded.items() if key in supported_keys}
+        expected = {key: value for key, value in decoded.items() if key in supported_keys}
+        return expected or None
 
+    @serialized_device_command
     async def async_refresh_state(self) -> bool:
         """Resolve the controller and request its current state."""
         if not await self._async_ensure_client() or self.client is None:
             return False
         client = self.client
+
+        if not await client.ensure_connected():
+            return False
 
         try:
             await client.request_state()
@@ -2097,7 +2463,9 @@ class Device:
             "configured_mac": self.address,
             "name": self.name,
             "model": self.model_name,
+            "product_id": self.product_id,
             "lamp_profile": self.lamp_profile,
+            "spectrum_profile": self.spectrum_profile(),
             "channel_count": self._resolved_channel_count(),
             "facebd": self.facebd,
             "connected": self.connected,
@@ -2116,21 +2484,35 @@ class Device:
                 "source_type": self.conn_info.get("active_connection_source_type"),
                 "connected_at": self.conn_info.get("active_connection_connected_at"),
                 "gatt_connected": self.connected,
+                "rssi": self.conn_info.get("rssi"),
+                "rssi_updated_at": self.conn_info.get("rssi_updated_at"),
             },
             "latest_advertisement": {
                 "source": self.conn_info.get("advertisement_source_address"),
                 "source_name": self.conn_info.get("advertisement_source"),
                 "source_type": self.conn_info.get("advertisement_source_type"),
-                "rssi": self.conn_info.get("rssi"),
-                "received_at": self.conn_info.get("rssi_updated_at"),
+                "rssi": self.conn_info.get("advertisement_rssi"),
+                "received_at": self.conn_info.get("advertisement_updated_at"),
             },
         }
+        if (product := product_from_id(self.product_id)) is not None:
+            report["product_capabilities"] = {
+                "channel_family": product.spectrum,
+                "neutral_channel": product.neutral_channel,
+                "native_effect_count": product.native_effect_count,
+                "manual_preset_count": product.manual_preset_count,
+            }
 
         if self.client is not None:
             report["gatt"] = {
                 "profile": self.client.profile,
                 "wifi_facebd": self.client.wifi_facebd,
-                "plant_pro_spp": self.client.plant_pro_spp,
+                "spp_transport": getattr(
+                    self.client,
+                    "spp_transport",
+                    getattr(self.client, "plant_pro_spp", False),
+                ),
+                "plant_pro_spp": getattr(self.client, "plant_pro_spp", False),
                 "raw_facebd": self.client.raw_facebd,
                 "command_write_uuid": self.client.command_write_uuid,
                 "notify_uuids": list(self.client.notify_uuids),
@@ -2286,10 +2668,10 @@ class Device:
             try:
                 cbor = protocol.decode_cbor_update(data)
             except ValueError as err:
-                _LOGGER.debug("Ignoring unsupported Plant Pro CBOR packet", exc_info=err)
+                _LOGGER.debug("Ignoring unsupported FFF0/SPP CBOR packet", exc_info=err)
                 return False
             if cbor is not None:
-                return self._decode_plant_pro_update(cbor)
+                return self._decode_spp_update(cbor)
             return False
 
         is_cbor_map = bool(data and data[0] >> 5 == 5)
@@ -2317,7 +2699,7 @@ class Device:
         if self.values["mode"] == "manual":
             self.values["led_on_off"] = bool(decoded["power"])
             if self.supports_classic_effects():
-                self.values["effect"] = self._native_effect_name(int(decoded["effect_id"]))
+                self._store_native_effect_code(int(decoded["effect_id"]))
             presets = [list(preset) for preset in decoded["presets"]]
             self.values["native_manual_presets"] = presets
             self.diagnostics.update(
@@ -2371,12 +2753,12 @@ class Device:
 
         if protocol.WIFI_MODE_KEY in data:
             mode = data[protocol.WIFI_MODE_KEY]
-            if isinstance(mode, int) and 0 <= mode < len(MODES):
+            if not isinstance(mode, bool) and isinstance(mode, int) and 0 <= mode < len(MODES):
                 self.values["mode"] = MODES[mode]
                 updated = True
 
-        if protocol.WIFI_SWITCH_KEY in data:
-            self.values["led_on_off"] = bool(data[protocol.WIFI_SWITCH_KEY])
+        if protocol.WIFI_SWITCH_KEY in data and isinstance(data[protocol.WIFI_SWITCH_KEY], bool):
+            self.values["led_on_off"] = data[protocol.WIFI_SWITCH_KEY]
             updated = True
 
         if protocol.WIFI_DST_KEY in data and isinstance(data[protocol.WIFI_DST_KEY], bool):
@@ -2388,18 +2770,20 @@ class Device:
             self.supports_facebd_effects()
             and protocol.WIFI_MANUAL_KEY in data
             and isinstance(data[protocol.WIFI_MANUAL_KEY], int)
+            and not isinstance(data[protocol.WIFI_MANUAL_KEY], bool)
         ):
             effect_code = data[protocol.WIFI_MANUAL_KEY]
-            self.values["effect"] = self._native_effect_name(effect_code) if effect_code else None
-            updated = True
+            updated = self._store_native_effect_code(effect_code) or updated
 
         present = 0
         for channel, key in zip(NUMBERS, protocol.WIFI_CHANNEL_KEYS, strict=False):
-            if key in data and isinstance(data[key], int):
-                self.values[channel] = max(0, min(100, int(data[key])))
+            value = data.get(key)
+            if not isinstance(value, bool) and isinstance(value, int) and 0 <= value <= 100:
+                self.values[channel] = value
                 present += 1
                 updated = True
-        if isinstance(data.get(protocol.WIFI_CHANNEL_KEYS[4]), int):
+        fifth_channel = data.get(protocol.WIFI_CHANNEL_KEYS[4])
+        if not isinstance(fifth_channel, bool) and isinstance(fifth_channel, int) and 0 <= fifth_channel <= 100:
             self._channel_count_hint = 5
         elif present >= 4:
             self._channel_count_hint = 4
@@ -2416,8 +2800,9 @@ class Device:
         )
         has_auto_sunrise = isinstance(data.get(protocol.WIFI_AUTO_SUNRISE_KEY), list)
         if has_auto_sunrise or any(key in data for key in unambiguous_facebd_schedule_keys):
-            auto_schedule = protocol.decode_wifi_auto_schedule(data)
-            pro_schedule = protocol.decode_wifi_pro_schedule(data, channel_count=self._resolved_channel_count())
+            channel_count = self._resolved_channel_count()
+            auto_schedule = protocol.decode_wifi_auto_schedule(data, channel_count=channel_count)
+            pro_schedule = protocol.decode_wifi_pro_schedule(data, channel_count=channel_count)
             updated = (
                 self._record_native_schedule_readback(
                     protocol_name="facebd",
@@ -2439,52 +2824,61 @@ class Device:
                 handler()
         return updated
 
-    def _decode_plant_pro_update(self, data: dict[int, Any]) -> bool:
-        """Decode a Plant Pro 4.0 D2 status map."""
+    def _decode_spp_update(self, data: dict[int, Any]) -> bool:
+        """Decode a current Plant/Reef FFF0/SPP D2 status map."""
         updated = False
         if protocol.SPP_FIRMWARE_VERSION_KEY in data:
             updated = self._store_firmware_version(data[protocol.SPP_FIRMWARE_VERSION_KEY]) or updated
 
         if protocol.SPP_MODE_KEY in data:
             mode = data[protocol.SPP_MODE_KEY]
-            if isinstance(mode, int) and 0 <= mode < len(MODES):
+            if not isinstance(mode, bool) and isinstance(mode, int) and 0 <= mode < len(MODES):
                 self.values["mode"] = MODES[mode]
                 updated = True
 
-        if protocol.SPP_SWITCH_KEY in data:
-            self.values["led_on_off"] = bool(data[protocol.SPP_SWITCH_KEY])
+        if protocol.SPP_SWITCH_KEY in data and isinstance(data[protocol.SPP_SWITCH_KEY], bool):
+            self.values["led_on_off"] = data[protocol.SPP_SWITCH_KEY]
             updated = True
 
         present = 0
         for channel, key in zip(NUMBERS, protocol.SPP_CHANNEL_KEYS, strict=False):
-            if key in data and isinstance(data[key], int):
-                self.values[channel] = max(0, min(100, int(data[key])))
+            value = data.get(key)
+            if not isinstance(value, bool) and isinstance(value, int) and 0 <= value <= 100:
+                self.values[channel] = value
                 present += 1
                 updated = True
         if present:
             self._channel_count_hint = 5 if present >= 5 else 4
 
-        if protocol.SPP_EFFECT_KEY in data and isinstance(data[protocol.SPP_EFFECT_KEY], int):
+        if (
+            protocol.SPP_EFFECT_KEY in data
+            and isinstance(data[protocol.SPP_EFFECT_KEY], int)
+            and not isinstance(data[protocol.SPP_EFFECT_KEY], bool)
+        ):
             effect_code = data[protocol.SPP_EFFECT_KEY]
-            self.values["effect"] = self._native_effect_name(effect_code) if effect_code else None
-            updated = True
+            updated = self._store_native_effect_code(effect_code) or updated
 
-        auto_schedule = protocol.decode_spp_auto_schedule(data)
-        pro_schedule = protocol.decode_spp_pro_schedule(data)
+        channel_count = self._resolved_channel_count()
+        auto_schedule = protocol.decode_spp_auto_schedule(data, channel_count=channel_count)
+        pro_schedule = protocol.decode_spp_pro_schedule(data, channel_count=channel_count)
         if self._record_native_schedule_readback(
-            protocol_name="plant_pro",
+            protocol_name="spp",
             auto=auto_schedule,
             professional=pro_schedule,
         ):
             updated = True
-        if auto_schedule is not None:
+        if auto_schedule is not None and self.uses_plant_spectrum():
             self.diagnostics["plant_pro_auto_schedule"] = auto_schedule
-        if pro_schedule is not None:
+        if pro_schedule is not None and self.uses_plant_spectrum():
             self.diagnostics["plant_pro_pro_schedule"] = pro_schedule
 
-        effect_schedule = protocol.decode_spp_effect_schedule(data)
+        product = product_from_id(self.product_id)
+        effect_schedule = protocol.decode_spp_effect_schedule(
+            data,
+            maximum_effect_id=product.native_effect_count if product is not None else 4,
+        )
         if self._record_native_effect_schedule_readback(
-            protocol_name="plant_pro",
+            protocol_name="spp",
             windows=effect_schedule,
         ):
             updated = True
@@ -2493,6 +2887,10 @@ class Device:
             for handler in self.updates_component:
                 handler()
         return updated
+
+    def _decode_plant_pro_update(self, data: dict[int, Any]) -> bool:
+        """Compatibility wrapper for the formerly Plant-specific decoder."""
+        return self._decode_spp_update(data)
 
     def _store_firmware_version(self, value: Any) -> bool:
         """Store a locally reported fixture firmware version."""

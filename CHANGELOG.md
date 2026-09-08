@@ -8,6 +8,165 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+
+- Reject native Auto and Professional schedule writes whose channel width does
+  not exactly match the fixture APK channel count, instead of silently slicing
+  longer payloads.
+
+## [0.0.14] — 2026-09-08
+
+### Added
+
+- Completed current-generation Reef controller handling for Fluval Reef 4.0
+  (product 546) and Reef Nano 4.0 (product 547). The integration now recognizes
+  their Reef advertisement names and treats the shared FFF0/SPP transport as a
+  current Plant-and-Reef protocol throughout commands, readback, schedules,
+  diagnostics, and tests.
+- Added an optional per-fixture three-second return to the Auto or Professional
+  mode used before exact channel-slider adjustment. Reaching zero still powers
+  off immediately, and any intervening channel, power, or mode action cancels
+  the return. The option defaults to off so a stored hardware schedule cannot
+  unexpectedly relight the fixture.
+- Exposed classic fixtures' four onboard manual presets as device-linked Home
+  Assistant scenes. Each scene recalls the exact P1-P4 channel values read from
+  the fixture; the existing explicit save action continues to handle overwrites.
+- Restored enabled, device-page controls for every physical light channel while
+  retaining the standard Home Assistant light entity. The sliders use the
+  FluvalConnect APK's product-specific four- or five-channel names and exact
+  0–100% values; direct channel changes update the light's best-fit display
+  state without writing the approximate RGB conversion back to the fixture.
+
+### Fixed
+
+- Corrected the APK-backed native schedule path across all controller
+  families: four-channel current fixtures now receive four-channel Auto data,
+  overnight sunrise and sunset ramps wrap across midnight, Professional points
+  are ordered and require unique in-day times, and malformed schedule readback
+  is rejected instead of being published as fixture state.
+- Stopped treating an accepted BLE write as confirmed state. Commands are no
+  longer duplicated after a successful GATT write, observable FACEBD and SPP
+  writes use exact typed readback verification, and commands without readable
+  state remain explicitly unverified.
+- Quiesce config-entry-owned migration work before preview and BLE-client
+  teardown so unload/reload cannot race an in-flight fixture command.
+- Removed two invented state transitions that are absent from FluvalConnect:
+  explicit power-off no longer restores a preview colour first, and leaving an
+  effect no longer substitutes a full-brightness neutral emitter when no prior
+  static channel state is known.
+- Reject malformed or out-of-range current-controller scalar state instead of
+  coercing it into a valid power, mode, effect, or channel reading.
+- Complete an APK-backed capability audit across all current and legacy light
+  families. Plant channel 4 is now labelled Pure White, and effect restoration
+  uses each product's explicit neutral-emitter metadata instead of translated
+  channel names. Diagnostics report the resolved spectrum and product
+  capabilities for future hardware validation without changing entity IDs.
+- Complete Roma & Shaker 2.0 current-controller handling using the APK's
+  four-channel RGBW payload width and eleven-effect catalogue for direct
+  effects, Auto and Professional schedules, timed effects, and readback.
+- Restore a neutral static output after leaving a Reef native effect by using
+  its APK-defined channel 5 Cold White bank. The former generic fallback used
+  channel 4, which is Purple on Reef fixtures.
+- Reassemble fragmented FFF0/SPP `D2` status reports before decoding them, so
+  Plant PRO, Plant 4.0, and other current controllers can return complete
+  channel, effect, Auto, Professional, and timed-effect schedule state.
+- Match FluvalConnect's shared 200 ms command queue and 5 ms chunk interval for
+  current-generation BLE controllers instead of imposing a slower 750 ms gap.
+- Keep the Connected since diagnostic enabled for persistent connections while
+  disabling only the stale RSSI sensor. Restored channel controls explicitly
+  default to enabled.
+- Route near-neutral colour-picker white to AquaSky's dedicated Pure White
+  emitter, accounting for Home Assistant frontend RGB quantization.
+- Turn the fixture off when every exact physical-channel slider reaches zero.
+
+---
+
+## [0.0.13] — 2026-09-05 — Hotfix
+
+### Fixed
+
+- Added a Connection mode diagnostic that reports `Persistent` or the exact
+  idle timeout. Signal strength and Last seen remain registered but are
+  disabled while persistent mode makes advertisement-derived values misleading;
+  selecting a finite timeout restores integration-disabled entities without
+  overriding user-disabled entities or replacing their history.
+- Match the FluvalConnect APK's Bluetooth scan boundary by requiring a
+  catalogued light product ID for automatic discovery. Device names and shared
+  service UUIDs no longer allow pumps, feeders, gateways, or unrelated BLE
+  devices to be offered as Fluval lights; manual setup remains available.
+- Keep the single five-channel Plant 3.0 light entity renderable on Home
+  Assistant 2026.9 by using the required typed empty feature flag when the
+  integration exposes an empty effect list.
+- Restore config-entry schema version 2 and migrate version 1 entries so
+  installations that previously ran a version 2 build are not rejected as a
+  downgrade by Home Assistant.
+
+### Changed
+- Classified invalid action input and targeting as translated Home Assistant
+  validation errors while keeping Bluetooth and fixture failures as translated
+  operational errors.
+- Separated concise, user-facing GitHub release notes from the detailed
+  changelog. Release tags now require a reviewed, versioned notes file instead
+  of publishing an entire changelog section automatically.
+- Added a Home Assistant device picker to every Fluval action while retaining
+  the historical config-entry and MAC selectors for existing automations and
+  bundled cards. Target-free calls now fail when more than one light exists
+  instead of controlling whichever fixture was loaded first.
+- Replaced controller-protocol codes in action names and descriptions with
+  fixture-focused language and detected-model capability wording.
+
+### Fixed
+- Serialized complete per-fixture command transactions so concurrent entity or
+  action calls cannot interleave the ordered packets for effects, channels,
+  schedules, previews, presets, clock synchronization, or state refresh.
+- Stopped software and fixture-native schedule previews before normal light or
+  Mode controls, preventing a preview from issuing channel or mode packets over
+  a newer user command.
+
+---
+
+## [0.0.12] — 2026-09-04
+
+### Fixed
+- Moved entity update subscriptions into Home Assistant's add/remove lifecycle
+  and made failed light, mode, daylight-saving, identify, and clock actions
+  raise one translated command error instead of silently returning or only
+  writing a log message.
+- Made APK product identity authoritative for channel count, channel labels,
+  spectrum profile, and native-effect catalogue. Fixtures without a decoded
+  product ID no longer acquire capabilities from editable Bluetooth names;
+  explicit fixture profiles and decoded live controller data remain supported
+  fallbacks.
+- Replaced hand-authored Plant and Marine colour guesses and generic AquaSky
+  RGBW conversion with product-specific CIE colour transforms derived from the
+  exact spectral power curves bundled in FluvalConnect. Product 328 now uses
+  the APK-selected `532_old_new.txt` profile, and chromatic RGB requests keep
+  the dedicated AquaSky white emitter off.
+- Limited the locally commanded colour cache to the controller's immediate
+  stale-status grace period so a later app, schedule, or fixture change can no
+  longer leave Home Assistant displaying the previous colour.
+- Kept AquaSky behind one standard Home Assistant RGB picker: achromatic white
+  now drives the APK-defined Pure White channel, while chromatic colour-wheel
+  and favourite-colour commands drive only physical RGB instead of letting
+  generic RGBW conversion wash them out with white.
+- Restored the last commanded color as Home Assistant's display value instead
+  of letting an immediate stale classic status notification move the picker
+  away from the color already rendered by the fixture.
+- Removed a duplicate XOR checksum from short classic BLE writes. The classic
+  command builders already produce complete APK frames, so power, mode, clock,
+  read, identify, and effect commands are once again encoded exactly once
+  before being written to `00001001`.
+- Restored the APK's 15-byte classic framing, per-chunk random-key encoder,
+  parse-driven notification reassembly, 200 ms clock/read pacing, and
+  power-before-colour command order.
+- Made the connection-options schema serializable by current Home Assistant
+  releases while retaining `0` for persistent BLE and `30`–`600` seconds for
+  finite idle disconnects.
+- Simplified Bluetooth diagnostics to one friendly-name-only Source entity,
+  restored the existing Signal strength name, and retired the redundant
+  advertisement-source entity. Signal strength now follows the scanner that
+  established the active GATT route instead of being overwritten by a weaker
+  advertisement from another scanner; it is disabled by default for new
+  installations because persistent GATT sessions do not provide live RSSI.
 - Hardened Home Assistant setup and Bluetooth discovery against malformed
   advertisements, and removed the empty address suffix from the fallback name
   shown when discovery details are unavailable.
@@ -21,11 +180,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   config-entry setup.
 
 ### Added
-- Added separate diagnostic sensors for the active Bluetooth connection source
-  and latest advertisement source. The GATT route is snapshotted only after a
-  connection succeeds, using Home Assistant's confirmed connected scanner when
-  available, so later advertisements from another adapter or proxy cannot overwrite it.
-  Downloadable diagnostics now report both routes.
+- Added an active Bluetooth Source diagnostic. The GATT route is snapshotted
+  only after a connection succeeds, using Home Assistant's confirmed connected
+  scanner when available. Downloadable diagnostics retain both the active route
+  and the latest advertisement details.
 - Added classic fixture-resident P1-P4 recall and save actions using the APK's
   `6804` channel write and `6806` zero-based save-slot command.
 - Added product-aware wavelength previews backed by FluvalConnect's six current

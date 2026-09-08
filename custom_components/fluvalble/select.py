@@ -4,6 +4,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from . import require_entry_runtime_data
 from .core.device import Device
 from .core.entity import FluvalEntity
 
@@ -16,7 +17,7 @@ def create_entities(device: Device) -> list:
 
 
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, add_entities: AddEntitiesCallback):
-    runtime = config_entry.runtime_data
+    runtime = require_entry_runtime_data(hass, config_entry)
     device = runtime.device
 
     if device:
@@ -43,9 +44,17 @@ class FluvalSelect(FluvalEntity, SelectEntity):
             self._async_write_ha_state()
 
     async def async_select_option(self, option: str) -> None:
+        async with self.device.command_transaction():
+            await self._async_select_option(option)
+
+    async def _async_select_option(self, option: str) -> None:
+        """Apply one complete mode-selection transaction."""
+        if not await self.device.async_stop_preview(restore=False):
+            self.internal_update()
+            self._raise_command_error()
         if not await self.device.async_select_option(self.attr, option):
             self.internal_update()
-            return
+            self._raise_command_error()
 
         self._attr_current_option = option
         self._async_write_ha_state()

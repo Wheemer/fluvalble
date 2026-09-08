@@ -31,20 +31,54 @@
     }
   },
   "options": {
+    "error": {
+      "invalid_active_time": "Enter 0 for a persistent connection, or a value from 30 to 600 seconds."
+    },
     "step": {
       "init": {
-        "title": "Connection options",
+        "title": "Fluval BLE options",
         "data": {
           "lamp_profile": "Lamp type",
           "ping_interval": "Keep-alive interval (seconds)",
-          "active_time": "Active connection window (seconds)"
+          "active_time": "Active connection window (seconds)",
+          "restore_previous_mode": "Restore previous mode after channels reach zero"
         },
         "data_description": {
           "lamp_profile": "Override auto-detection when the wrong model or channel count is shown. Plant and Marine/Reef use their distinct five-channel spectral layouts.",
           "ping_interval": "How often Home Assistant reads from the light to keep the BLE connection alive. Lower values improve reliability at the cost of slightly more radio traffic. Default: 10 s.",
-          "active_time": "How long to maintain the BLE connection after the last command. Use 0 for a persistent connection with the lowest command latency, or 30–600 seconds to disconnect when idle. Persistent connections consume a Bluetooth connection slot and can prevent the Fluval app or gateway from connecting. Default: 120 s."
+          "active_time": "How long to maintain the BLE connection after the last command. Use 0 for a persistent connection with the lowest command latency, or 30–600 seconds to disconnect when idle. Persistent connections consume a Bluetooth connection slot and can prevent the Fluval app or gateway from connecting. Default: 120 s.",
+          "restore_previous_mode": "After all exact channel sliders reach zero, wait three seconds and restore the mode used before channel adjustment. Any new channel, power, or mode control cancels the restoration. This may allow the fixture's Auto or Professional schedule to turn the light back on. Default: off."
         }
       }
+    }
+  },
+  "exceptions": {
+    "channels_required": {
+      "message": "Set at least one light channel."
+    },
+    "command_failed": {
+      "message": "Unable to control the Fluval light: {error}"
+    },
+    "config_entry_not_found": {
+      "message": "No matching Fluval BLE configuration entry was found."
+    },
+    "device_not_managed": {
+      "message": "The selected device is not managed by Fluval BLE."
+    },
+    "effect_schedule_normalization_failed": {
+      "message": "Unable to normalize the timed-effect schedule."
+    },
+    "light_unavailable": {
+      "message": "The selected Fluval light is not loaded or available."
+    },
+    "select_one_light": {
+      "message": "Select one Fluval light for this action."
+    },
+    "selected_device_missing": {
+      "message": "The selected Home Assistant device no longer exists."
+    },
+    "unsupported_schedule_mode": {
+      "message": "The fixture schedule mode {mode} is not supported."
     }
   },
   "entity": {
@@ -71,6 +105,20 @@
         }
       }
     },
+    "scene": {
+      "manual_preset_1": {
+        "name": "Manual preset P1"
+      },
+      "manual_preset_2": {
+        "name": "Manual preset P2"
+      },
+      "manual_preset_3": {
+        "name": "Manual preset P3"
+      },
+      "manual_preset_4": {
+        "name": "Manual preset P4"
+      }
+    },
     "switch": {
       "daylight_saving_time": {
         "name": "Daylight saving time"
@@ -83,16 +131,19 @@
     },
     "sensor": {
       "rssi": {
-        "name": "Advertisement signal strength"
+        "name": "Signal strength"
       },
       "last_seen": {
         "name": "Last seen"
       },
-      "active_connection_source": {
-        "name": "Bluetooth connection source"
+      "connected_since": {
+        "name": "Connected since"
       },
-      "advertisement_source": {
-        "name": "Bluetooth advertisement source"
+      "active_connection_source": {
+        "name": "Source"
+      },
+      "connection_mode": {
+        "name": "Connection mode"
       }
     }
   }

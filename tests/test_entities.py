@@ -11,23 +11,36 @@ from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_EFFECT,
     ATTR_RGB_COLOR,
-    ATTR_RGBW_COLOR,
     ColorMode,
 )
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.fluvalble import binary_sensor, button, diagnostics, light, select, sensor, switch
+from custom_components.fluvalble import (
+    DOMAIN,
+    FluvalRuntimeData,
+    binary_sensor,
+    button,
+    diagnostics,
+    light,
+    number,
+    scene,
+    select,
+    sensor,
+    switch,
+)
 from custom_components.fluvalble.core.device import Device
 
 
-def _make_device():
+def _make_device(*, active_time: int = 120):
     now = datetime.now(UTC)
     device = Device(
         "AquaSky3.0_Test",
         config_data={
             "mac": "AA:BB:CC:DD:EE:FF",
             "model": "AquaSky Bluetooth LED",
+            "product_id": 532,
         },
+        active_time=active_time,
     )
     device.connected = True
     device.conn_info["rssi"] = -70
@@ -35,6 +48,7 @@ def _make_device():
     device.conn_info["advertisement_source"] = "Aquarium USB adapter"
     device.conn_info["advertisement_source_address"] = "00:11:22:33:44:55"
     device.conn_info["advertisement_source_type"] = "usb"
+    device.conn_info["advertisement_rssi"] = -82
     device.conn_info["advertisement_updated_at"] = now
     device.conn_info["active_connection_source"] = "fish"
     device.conn_info["active_connection_source_address"] = "66:77:88:99:AA:BB"
@@ -65,10 +79,223 @@ def test_create_entities_for_platforms():
     assert len(button.create_entities(device)) == 2
     assert len(binary_sensor.create_entities(device)) == 1
     assert len(light.create_entities(device)) == 1
+    assert scene.create_entities(device) == []
+    channel_entities = number.create_entities(device)
+    assert [entity._attr_name for entity in channel_entities] == [
+        "Red",
+        "Green",
+        "Blue",
+        "White",
+    ]
     assert switch.create_entities(device) == []
 
     device.facebd = True
     assert len(switch.create_entities(device)) == 1
+
+
+def test_classic_manual_presets_are_device_linked_scenes():
+    device = Device(
+        "AquaSky2.0_Test",
+        config_data={"mac": "AA:BB:CC:DD:EE:FF", "product_id": 328},
+    )
+    device.connected = True
+    device.conn_info["last_seen"] = datetime.now(UTC)
+    device.values.update(
+        {
+            "led_on_off": True,
+            "native_manual_presets": [[10, 20, 30, 40]] * 4,
+        }
+    )
+
+    entities = scene.create_entities(device)
+
+    assert [entity.slot for entity in entities] == [1, 2, 3, 4]
+    assert [entity._attr_translation_key for entity in entities] == [
+        "manual_preset_1",
+        "manual_preset_2",
+        "manual_preset_3",
+        "manual_preset_4",
+    ]
+    assert [entity._attr_unique_id for entity in entities] == [
+        "AABBCCDDEEFF_manual_preset_1",
+        "AABBCCDDEEFF_manual_preset_2",
+        "AABBCCDDEEFF_manual_preset_3",
+        "AABBCCDDEEFF_manual_preset_4",
+    ]
+    assert all(entity._attr_device_info["identifiers"] == {(DOMAIN, "AA:BB:CC:DD:EE:FF")} for entity in entities)
+    assert all(entity._attr_available for entity in entities)
+
+
+def test_manual_preset_scene_requires_readback_and_light_on():
+    device = Device(
+        "AquaSky2.0_Test",
+        config_data={"mac": "AA:BB:CC:DD:EE:FF", "product_id": 328},
+    )
+    device.connected = True
+    device.conn_info["last_seen"] = datetime.now(UTC)
+    entity = scene.FluvalManualPresetScene(device, 1)
+
+    assert entity._attr_available is False
+
+    device.values["native_manual_presets"] = [[10, 20, 30, 40]] * 4
+    entity.internal_update()
+    assert entity._attr_available is False
+
+    device.values["led_on_off"] = True
+    entity.internal_update()
+    assert entity._attr_available is True
+
+
+def test_manual_preset_scene_recalls_fixture_slot():
+    asyncio.run(_async_test_manual_preset_scene_recalls_fixture_slot())
+
+
+async def _async_test_manual_preset_scene_recalls_fixture_slot():
+    device = Device(
+        "AquaSky2.0_Test",
+        config_data={"mac": "AA:BB:CC:DD:EE:FF", "product_id": 328},
+    )
+    device.connected = True
+    device.values.update(
+        {
+            "led_on_off": True,
+            "native_manual_presets": [[10, 20, 30, 40]] * 4,
+        }
+    )
+    device.async_recall_manual_preset = AsyncMock(return_value=True)
+    entity = scene.FluvalManualPresetScene(device, 3)
+
+    await entity.async_activate()
+
+    device.async_recall_manual_preset.assert_awaited_once_with(3)
+
+
+def test_manual_preset_scene_surfaces_command_failure():
+    asyncio.run(_async_test_manual_preset_scene_surfaces_command_failure())
+
+
+async def _async_test_manual_preset_scene_surfaces_command_failure():
+    device = Device(
+        "AquaSky2.0_Test",
+        config_data={"mac": "AA:BB:CC:DD:EE:FF", "product_id": 328},
+    )
+    device.connected = True
+    device.values.update(
+        {
+            "led_on_off": True,
+            "native_manual_presets": [[10, 20, 30, 40]] * 4,
+        }
+    )
+    device.client = SimpleNamespace(last_error="fixture unavailable")
+    device.async_recall_manual_preset = AsyncMock(return_value=False)
+    entity = scene.FluvalManualPresetScene(device, 2)
+
+    with pytest.raises(HomeAssistantError, match="fixture unavailable"):
+        await entity.async_activate()
+
+
+@pytest.mark.parametrize(
+    ("product_id", "expected_names"),
+    [
+        (532, ["Red", "Green", "Blue", "White"]),
+        (305, ["Pink", "Blue", "Cold White", "Pure White", "Warm White"]),
+        (546, ["Pink", "Cyan", "Blue", "Purple", "Cold White"]),
+    ],
+)
+def test_channel_controls_follow_apk_product_layout(product_id, expected_names):
+    device = Device(
+        "Fluval_Test",
+        config_data={"mac": "AA:BB:CC:DD:EE:FF", "product_id": product_id},
+    )
+    device.connected = True
+    device.conn_info["last_seen"] = datetime.now(UTC)
+
+    entities = number.create_entities(device)
+
+    assert [entity._attr_name for entity in entities] == expected_names
+    assert all(entity._attr_native_min_value == 0 for entity in entities)
+    assert all(entity._attr_native_max_value == 100 for entity in entities)
+    assert all(entity._attr_native_step == 1 for entity in entities)
+    assert all(entity._attr_native_unit_of_measurement == "%" for entity in entities)
+    assert all(entity._attr_available for entity in entities)
+    assert all(getattr(entity, "_attr_entity_category", None) is None for entity in entities)
+    assert all(getattr(entity, "_attr_entity_registry_enabled_default", True) for entity in entities)
+
+
+def test_channel_control_writes_exact_emitter_percentage():
+    asyncio.run(_async_test_channel_control_writes_exact_emitter_percentage())
+
+
+async def _async_test_channel_control_writes_exact_emitter_percentage():
+    device = _make_device()
+    device.async_set_value = AsyncMock(return_value=True)
+    entity = number.FluvalChannelNumber(device, "channel_2")
+
+    await entity.async_set_native_value(37)
+
+    device.async_set_value.assert_awaited_once_with("channel_2", 37)
+
+
+def test_channel_control_refreshes_light_with_new_best_fit_colour():
+    asyncio.run(_async_test_channel_control_refreshes_light_with_new_best_fit_colour())
+
+
+async def _async_test_channel_control_refreshes_light_with_new_best_fit_colour():
+    device = _make_device()
+    device.values.update(
+        {
+            "channel_1": 100,
+            "channel_2": 0,
+            "channel_3": 0,
+            "channel_4": 0,
+            "mode": "manual",
+            "led_on_off": True,
+        }
+    )
+    device._async_prepare_command = AsyncMock(return_value=True)
+    device._async_send_channel_state = AsyncMock(return_value=True)
+    light_entity = light.FluvalLight(device, "light")
+    channel_entity = number.FluvalChannelNumber(device, "channel_2")
+    device.updates_component.extend([light_entity.internal_update, channel_entity.internal_update])
+    original_rgb = light_entity._attr_rgb_color
+
+    await channel_entity.async_set_native_value(100)
+
+    assert channel_entity._attr_native_value == 100
+    assert light_entity._attr_rgb_color == device.aquasky_rgb_255()
+    assert light_entity._attr_rgb_color != original_rgb
+    device._async_send_channel_state.assert_awaited_once()
+
+
+def test_channel_control_surfaces_ble_command_failure():
+    asyncio.run(_async_test_channel_control_surfaces_ble_command_failure())
+
+
+async def _async_test_channel_control_surfaces_ble_command_failure():
+    device = _make_device()
+    device.client = SimpleNamespace(last_error="fixture unavailable", command_write_uuid=None)
+    device.async_set_value = AsyncMock(return_value=False)
+    entity = number.FluvalChannelNumber(device, "channel_1")
+
+    with pytest.raises(HomeAssistantError, match="fixture unavailable"):
+        await entity.async_set_native_value(25)
+
+
+def test_empty_effect_list_uses_typed_empty_feature_flag():
+    """HA 2026.9 requires supported_features to remain an IntFlag value."""
+    device = Device(
+        "Fluval Plant 3.0",
+        config_data={
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "product_id": 305,
+        },
+    )
+
+    entity = light.create_entities(device)[0]
+
+    assert entity._attr_supported_color_modes == {ColorMode.RGB}
+    assert entity._attr_supported_features == light.LightEntityFeature(0)
+    assert isinstance(entity._attr_supported_features, light.LightEntityFeature)
 
 
 def test_identify_button_routes_to_device_command():
@@ -138,30 +365,71 @@ def test_diagnostic_entities_update_from_device_attributes():
     rssi = sensor.FluvalSensor(device, "rssi")
     last_seen = sensor.FluvalSensor(device, "last_seen")
     connection_source = sensor.FluvalSensor(device, "active_connection_source")
-    advertisement_source = sensor.FluvalSensor(device, "advertisement_source")
+    connection_mode = sensor.FluvalSensor(device, "connection_mode")
+
+    assert rssi._attr_entity_registry_enabled_default is True
+    assert last_seen._attr_entity_registry_enabled_default is True
 
     connection.internal_update()
     rssi.internal_update()
     last_seen.internal_update()
     connection_source.internal_update()
-    advertisement_source.internal_update()
+    connection_mode.internal_update()
 
     assert connection._attr_is_on is True
+    assert rssi._attr_available is True
     assert rssi._attr_native_value == -70
     assert rssi._attr_state_class.value == "measurement"
     assert rssi._attr_extra_state_attributes == {
-        "source_name": "Aquarium USB adapter",
-        "source_address": "00:11:22:33:44:55",
-        "source_type": "usb",
-        "last_advertisement": device.conn_info["rssi_updated_at"],
         "last_updated": device.conn_info["rssi_updated_at"],
     }
     assert last_seen._attr_native_value == device.conn_info["last_seen"]
     assert connection_source._attr_native_value == "fish"
+    assert connection_source._attr_icon == "mdi:bluetooth"
+    assert "source_address" not in connection_source._attr_extra_state_attributes
     assert connection_source._attr_extra_state_attributes["source_type"] == "remote"
     assert connection_source._attr_extra_state_attributes["gatt_connected"] is True
-    assert advertisement_source._attr_native_value == "Aquarium USB adapter"
-    assert advertisement_source._attr_extra_state_attributes["source_type"] == "usb"
+    assert connection_mode._attr_native_value == "120 seconds"
+
+    device.connected = False
+    rssi.internal_update()
+    assert rssi._attr_available is True
+    assert rssi._attr_native_value == -70
+
+
+def test_persistent_connection_mode_hides_stale_rssi():
+    device = _make_device(active_time=0)
+
+    connection_mode = sensor.FluvalSensor(device, "connection_mode")
+    rssi = sensor.FluvalSensor(device, "rssi")
+    connected_since = sensor.FluvalSensor(device, "last_seen")
+
+    assert connection_mode._attr_native_value == "Persistent"
+    assert rssi._attr_entity_registry_enabled_default is False
+    assert connected_since._attr_entity_registry_enabled_default is True
+    assert rssi._attr_available is False
+    assert rssi._attr_native_value is None
+    assert rssi._attr_extra_state_attributes == {
+        "last_updated": device.conn_info["rssi_updated_at"],
+    }
+    assert connected_since._attr_translation_key == "connected_since"
+    assert connected_since._attr_native_value == device.conn_info["active_connection_connected_at"]
+
+    device.connected = False
+    connected_since.internal_update()
+    assert connected_since._attr_available is False
+    assert connected_since._attr_native_value is None
+
+
+def test_connection_mode_uses_singular_second():
+    device = _make_device(active_time=1)
+
+    connection_mode = sensor.FluvalSensor(device, "connection_mode")
+    last_seen = sensor.FluvalSensor(device, "last_seen")
+
+    assert connection_mode._attr_native_value == "1 second"
+    assert last_seen._attr_translation_key == "last_seen"
+    assert last_seen._attr_native_value == device.conn_info["last_seen"]
 
 
 def test_downloadable_diagnostics_redact_identifiers_but_keep_protocol_fields():
@@ -236,7 +504,29 @@ async def _async_test_downloadable_diagnostics_do_not_touch_ble():
     assert report["active_connection"]["source_type"] == "remote"
     assert report["latest_advertisement"]["source"] == diagnostics.REDACTED
     assert report["latest_advertisement"]["source_name"] == diagnostics.REDACTED
-    assert report["latest_advertisement"]["rssi"] == -70
+    assert report["active_connection"]["rssi"] == -70
+    assert report["latest_advertisement"]["rssi"] == -82
+
+
+def test_diagnostics_support_legacy_runtime_storage():
+    asyncio.run(_async_test_diagnostics_support_legacy_runtime_storage())
+
+
+async def _async_test_diagnostics_support_legacy_runtime_storage():
+    fluval = SimpleNamespace(async_collect_diagnostics=AsyncMock(return_value={"status": "ok"}))
+    entry = SimpleNamespace(
+        entry_id="private-entry-id",
+        title="Kitchen Aquarium",
+        unique_id="AA:BB:CC:DD:EE:FF",
+        data={"mac": "AA:BB:CC:DD:EE:FF"},
+        options={},
+    )
+    hass = SimpleNamespace(data={DOMAIN: {entry.entry_id: FluvalRuntimeData(device=fluval)}})
+
+    report = await diagnostics._build_report(entry, hass)
+
+    fluval.async_collect_diagnostics.assert_awaited_once_with()
+    assert report["status"] == "ok"
 
 
 def test_light_internal_update_and_actions():
@@ -251,19 +541,65 @@ async def _async_test_light_internal_update_and_actions():
     device.values["led_on_off"] = False
 
     entity.internal_update()
-    await entity.async_turn_on(**{ATTR_BRIGHTNESS: 128, ATTR_RGBW_COLOR: (0, 255, 0, 0)})
+    await entity.async_turn_on(**{ATTR_BRIGHTNESS: 128, ATTR_RGB_COLOR: (0, 255, 0)})
     await entity.async_turn_off()
 
     assert entity._attr_is_on is False
     device.async_apply_light_channels.assert_awaited_once_with(
         {
-            "channel_1": 0,
+            "channel_1": 31,
             "channel_2": 50,
             "channel_3": 0,
             "channel_4": 0,
         }
     )
     device.async_set_switch.assert_awaited_once_with("led_on_off", False)
+
+
+def test_aquasky_mauve_does_not_enable_white_channel():
+    asyncio.run(_async_test_aquasky_mauve_does_not_enable_white_channel())
+
+
+async def _async_test_aquasky_mauve_does_not_enable_white_channel():
+    device = _make_device()
+    entity = light.FluvalLight(device, "light")
+    device.async_apply_light_channels = AsyncMock(return_value=True)
+
+    await entity.async_turn_on(**{ATTR_BRIGHTNESS: 255, ATTR_RGB_COLOR: (215, 150, 255)})
+
+    device.async_apply_light_channels.assert_awaited_once_with(
+        {
+            "channel_1": 90,
+            "channel_2": 32,
+            "channel_3": 100,
+            "channel_4": 0,
+        }
+    )
+
+
+def test_aquasky_neutral_rgb_uses_only_white_channel():
+    asyncio.run(_async_test_aquasky_neutral_rgb_uses_only_white_channel())
+
+
+async def _async_test_aquasky_neutral_rgb_uses_only_white_channel():
+    device = _make_device()
+    entity = light.FluvalLight(device, "light")
+    device.async_apply_light_channels = AsyncMock(return_value=True)
+
+    await entity.async_turn_on(**{ATTR_BRIGHTNESS: 128, ATTR_RGB_COLOR: (255, 255, 255)})
+
+    device.async_apply_light_channels.assert_awaited_once_with(
+        {
+            "channel_1": 0,
+            "channel_2": 0,
+            "channel_3": 0,
+            "channel_4": 50,
+        }
+    )
+    assert device.light_brightness_255() == 128
+    assert entity._attr_supported_color_modes == {ColorMode.RGB}
+    assert entity._attr_color_mode is ColorMode.RGB
+    assert entity._attr_rgb_color == (255, 255, 255)
 
 
 def test_marine_light_uses_standard_rgb_control_for_all_five_channels():
@@ -290,11 +626,11 @@ async def _async_test_marine_light_uses_standard_rgb_control_for_all_five_channe
 
     device.async_apply_light_channels.assert_awaited_once_with(
         {
-            "channel_1": 0,
+            "channel_1": 100,
             "channel_2": 0,
             "channel_3": 0,
-            "channel_4": 100,
-            "channel_5": 0,
+            "channel_4": 0,
+            "channel_5": 10,
         }
     )
 
@@ -316,6 +652,152 @@ async def _async_test_light_entity_handles_power_only_actions():
     assert device.async_set_switch.await_args_list[1].args == ("led_on_off", False)
 
 
+def test_normal_light_and_mode_controls_stop_active_previews_first():
+    asyncio.run(_async_test_normal_light_and_mode_controls_stop_active_previews_first())
+
+
+async def _async_test_normal_light_and_mode_controls_stop_active_previews_first():
+    device = _make_device()
+    device.values["led_on_off"] = True
+    events = []
+
+    async def stop_preview(*, restore=True):
+        events.append(("stop_preview", restore))
+        return True
+
+    async def apply_channels(_channels):
+        events.append(("apply_channels", None))
+        return True
+
+    async def set_switch(_attr, _value):
+        events.append(("set_switch", None))
+        return True
+
+    async def set_option(_attr, _option):
+        events.append(("set_option", None))
+        return True
+
+    device.async_stop_preview = AsyncMock(side_effect=stop_preview)
+    device.async_apply_light_channels = AsyncMock(side_effect=apply_channels)
+    device.async_set_switch = AsyncMock(side_effect=set_switch)
+    device.async_select_option = AsyncMock(side_effect=set_option)
+    light_entity = light.FluvalLight(device, "light")
+    mode_entity = select.FluvalSelect(device, "mode")
+
+    await light_entity.async_turn_on(**{ATTR_RGB_COLOR: (0, 255, 0)})
+    device.async_stop_preview.assert_awaited_once_with(restore=False)
+    assert events == [("stop_preview", False), ("apply_channels", None)]
+
+    device.async_stop_preview.reset_mock()
+    events.clear()
+    await light_entity.async_turn_off()
+    device.async_stop_preview.assert_awaited_once_with(restore=False)
+    assert events == [("stop_preview", False), ("set_switch", None)]
+
+    device.async_stop_preview.reset_mock()
+    events.clear()
+    await mode_entity.async_select_option("automatic")
+    device.async_stop_preview.assert_awaited_once_with(restore=False)
+    device.async_select_option.assert_awaited_once_with("mode", "automatic")
+    assert events == [("stop_preview", False), ("set_option", None)]
+
+
+def test_preview_stop_and_replacement_entity_command_are_atomic():
+    asyncio.run(_async_test_preview_stop_and_replacement_entity_command_are_atomic())
+
+
+async def _async_test_preview_stop_and_replacement_entity_command_are_atomic():
+    device = _make_device()
+    device.values["led_on_off"] = True
+    events = []
+    first_stop_started = asyncio.Event()
+    release_first_stop = asyncio.Event()
+    stop_calls = 0
+
+    async def stop_preview(*, restore=True):
+        nonlocal stop_calls
+        stop_calls += 1
+        events.append(("stop_preview", restore))
+        if stop_calls == 1:
+            first_stop_started.set()
+            await release_first_stop.wait()
+        return True
+
+    async def set_switch(_attr, _value):
+        events.append(("set_switch", None))
+        return True
+
+    async def set_option(_attr, _option):
+        events.append(("set_option", None))
+        return True
+
+    device.async_stop_preview = AsyncMock(side_effect=stop_preview)
+    device.async_set_switch = AsyncMock(side_effect=set_switch)
+    device.async_select_option = AsyncMock(side_effect=set_option)
+    light_entity = light.FluvalLight(device, "light")
+    mode_entity = select.FluvalSelect(device, "mode")
+
+    power_task = asyncio.create_task(light_entity.async_turn_off())
+    await first_stop_started.wait()
+    mode_task = asyncio.create_task(mode_entity.async_select_option("automatic"))
+    await asyncio.sleep(0)
+
+    assert events == [("stop_preview", False)]
+    assert not mode_task.done()
+
+    release_first_stop.set()
+    await power_task
+    await mode_task
+    assert events == [
+        ("stop_preview", False),
+        ("set_switch", None),
+        ("stop_preview", False),
+        ("set_option", None),
+    ]
+
+
+def test_turn_off_is_attempted_when_preview_stop_fails():
+    asyncio.run(_async_test_turn_off_is_attempted_when_preview_stop_fails())
+
+
+async def _async_test_turn_off_is_attempted_when_preview_stop_fails():
+    device = _make_device()
+    device.client = SimpleNamespace(
+        last_error="preview stop failed",
+        command_write_uuid=None,
+    )
+    device.async_stop_preview = AsyncMock(return_value=False)
+    device.async_set_switch = AsyncMock(return_value=True)
+    entity = light.FluvalLight(device, "light")
+
+    with pytest.raises(HomeAssistantError, match="preview stop failed"):
+        await entity.async_turn_off()
+
+    device.async_stop_preview.assert_awaited_once_with(restore=False)
+    device.async_set_switch.assert_awaited_once_with("led_on_off", False)
+
+
+def test_turn_on_does_not_write_over_a_preview_that_failed_to_stop():
+    asyncio.run(_async_test_turn_on_does_not_write_over_a_preview_that_failed_to_stop())
+
+
+async def _async_test_turn_on_does_not_write_over_a_preview_that_failed_to_stop():
+    device = _make_device()
+    device.client = SimpleNamespace(
+        last_error="preview stop failed",
+        command_write_uuid=None,
+    )
+    device.async_stop_preview = AsyncMock(return_value=False)
+    device.async_apply_light_channels = AsyncMock(return_value=True)
+    entity = light.FluvalLight(device, "light")
+
+    with pytest.raises(HomeAssistantError, match="preview stop failed"):
+        await entity.async_turn_on(**{ATTR_RGB_COLOR: (0, 255, 0)})
+
+    device.async_stop_preview.assert_awaited_once_with(restore=False)
+    device.async_apply_light_channels.assert_not_awaited()
+
+
 def test_light_entity_surfaces_ble_command_failures():
     asyncio.run(_async_test_light_entity_surfaces_ble_command_failures())
 
@@ -329,8 +811,47 @@ async def _async_test_light_entity_surfaces_ble_command_failures():
     device.async_set_switch = AsyncMock(return_value=False)
     entity = light.FluvalLight(device, "light")
 
-    with pytest.raises(HomeAssistantError, match="connect failed: fixture unavailable"):
+    with pytest.raises(HomeAssistantError, match="connect failed: fixture unavailable") as raised:
         await entity.async_turn_off()
+
+    assert raised.value.translation_domain == "fluvalble"
+    assert raised.value.translation_key == "command_failed"
+    assert raised.value.translation_placeholders == {"error": "connect failed: fixture unavailable"}
+
+
+def test_non_light_entities_surface_ble_command_failures():
+    asyncio.run(_async_test_non_light_entities_surface_ble_command_failures())
+
+
+async def _async_test_non_light_entities_surface_ble_command_failures():
+    device = _make_device()
+    device.client = SimpleNamespace(
+        last_error="write failed: fixture unavailable",
+        command_write_uuid=None,
+    )
+    device.facebd = True
+    device.values["daylight_saving_time"] = False
+    device.async_select_option = AsyncMock(return_value=False)
+    device.async_set_daylight_saving_time = AsyncMock(return_value=False)
+    device.async_identify = AsyncMock(return_value=False)
+    device.async_sync_clock = AsyncMock(return_value=False)
+
+    actions = (
+        select.FluvalSelect(device, "mode").async_select_option("automatic"),
+        switch.FluvalDaylightSavingSwitch(
+            device,
+            "daylight_saving_time",
+        ).async_turn_on(),
+        button.FluvalIdentifyButton(device, "identify").async_press(),
+        button.FluvalSyncClockButton(device, "sync_clock").async_press(),
+    )
+
+    for action in actions:
+        with pytest.raises(HomeAssistantError, match="write failed: fixture unavailable") as raised:
+            await action
+        assert raised.value.translation_domain == "fluvalble"
+        assert raised.value.translation_key == "command_failed"
+        assert raised.value.translation_placeholders == {"error": "write failed: fixture unavailable"}
 
 
 def test_light_exposes_and_routes_classic_native_effects():
@@ -396,14 +917,41 @@ def test_light_exposes_facebd_native_effects():
     ]
 
 
-def test_entity_unregisters_update_handler():
+def test_entity_subscribes_and_unregisters_update_handler_in_ha_lifecycle():
     device = _make_device()
+    device.register_update = MagicMock()
     device.deregister_update = MagicMock()
     entity = light.FluvalLight(device, "light")
 
-    asyncio.run(entity.async_will_remove_from_hass())
+    async def run_test():
+        assert device.register_update.call_count == 0
+        await entity.async_added_to_hass()
+        device.register_update.assert_called_once_with("light", entity._update_handler)
 
+        await entity.async_will_remove_from_hass()
+
+    asyncio.run(run_test())
     device.deregister_update.assert_called_once_with("light", entity._update_handler)
+
+
+def test_entity_reload_cycle_leaves_no_stale_update_handlers():
+    device = _make_device()
+
+    async def run_test():
+        first = light.FluvalLight(device, "light")
+        assert first._update_handler not in device.updates_component
+        await first.async_added_to_hass()
+        assert device.updates_component == [first._update_handler]
+        await first.async_will_remove_from_hass()
+        assert device.updates_component == []
+
+        second = light.FluvalLight(device, "light")
+        await second.async_added_to_hass()
+        assert device.updates_component == [second._update_handler]
+        await second.async_will_remove_from_hass()
+        assert device.updates_component == []
+
+    asyncio.run(run_test())
 
 
 def test_controls_remain_available_when_recently_seen_but_not_connected():
