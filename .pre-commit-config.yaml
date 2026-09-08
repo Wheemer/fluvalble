@@ -1,8 +1,7 @@
 # Pre-commit configuration for the Fluval BLE Home Assistant integration.
 #
 # Install once with:
-#   pip install -r requirements.txt
-#   pip install --upgrade ruff
+#   pip install --upgrade -r requirements.txt
 #   pre-commit install
 #
 # Then every `git commit` will run ruff format and ruff check against the

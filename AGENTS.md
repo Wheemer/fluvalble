@@ -67,7 +67,7 @@ pytest tests/ --cov=custom_components/fluvalble --cov-report=term-missing
   workflows without a maintainer review — they own the release train.
 - **Do not** add new top-level dependencies to `manifest.json` without
   considering whether they should be `requirements` (run-time) or development
-  only (pinned in `requirements.in` and compiled into `requirements.txt`).
+  only (intentionally unpinned in `requirements.in`, included by `requirements.txt`).
 - **Do not** rename the integration domain (`fluvalble`). It is the
   config-flow key and HACS identifier.
 

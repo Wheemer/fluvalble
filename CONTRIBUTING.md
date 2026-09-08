@@ -19,8 +19,7 @@ This repository uses short-lived branches merged into `main`:
 # 1. Install dev tooling
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-pip install --upgrade ruff
+pip install --upgrade -r requirements.txt
 pre-commit install
 
 # 2. Run the test suite
@@ -31,17 +30,13 @@ ruff check custom_components/ tests/
 ruff format --check custom_components/ tests/
 ```
 
-Ruff is intentionally unpinned: CI installs the latest compatible version on
-every run. Run `pip install --upgrade ruff` to update an existing local environment.
+Python development dependencies are intentionally unpinned in `requirements.in`.
+`requirements.txt` includes that list; it is not a generated lockfile.
+Fresh CI environments resolve the latest compatible versions. To update an
+existing local environment, run `pip install --upgrade -r requirements.txt`.
 Pre-commit uses that environment's Ruff rather than a separately pinned copy.
-
-Other direct development dependencies are pinned in `requirements.in`, and
-`requirements.txt` is the complete reproducible lock used by CI. After changing
-`requirements.in`, regenerate the lock with:
-
-```bash
-uv pip compile requirements.in --python-version 3.11 --universal --generate-hashes --output-file requirements.txt
-```
+Dependency changes can affect builds without a repository commit; CI checks
+compatibility when it runs. GitHub Actions retain their security commit pins.
 
 ## Tests
 

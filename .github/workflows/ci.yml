@@ -28,10 +28,8 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install locked development dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install --upgrade ruff
+      - name: Install current development dependencies
+        run: pip install --upgrade -r requirements.txt
 
       - name: Run Ruff (linter + formatter check)
         run: |
@@ -112,7 +110,7 @@ jobs:
           cache: pip
 
       - name: Install test dependencies
-        run: pip install -r requirements.txt
+        run: pip install --upgrade -r requirements.txt
 
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short
@@ -132,8 +130,8 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install locked development dependencies
-        run: pip install -r requirements.txt
+      - name: Install current development dependencies
+        run: pip install --upgrade -r requirements.txt
 
       - name: Run mypy
         # HA's runtime types are not installable in CI; we type-check against
@@ -166,8 +164,8 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install locked development dependencies
-        run: pip install -r requirements.txt
+      - name: Install current development dependencies
+        run: pip install --upgrade -r requirements.txt
 
       - name: Run tests with coverage
         run: |
