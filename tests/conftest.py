@@ -66,10 +66,27 @@ def _stub_homeassistant():
 
     # ---- homeassistant.exceptions ----
     class HomeAssistantError(Exception):
-        pass
+        def __init__(
+            self,
+            message=None,
+            *,
+            translation_domain=None,
+            translation_key=None,
+            translation_placeholders=None,
+        ):
+            self.translation_domain = translation_domain
+            self.translation_key = translation_key
+            self.translation_placeholders = translation_placeholders
+            if message is None and translation_placeholders:
+                message = translation_placeholders.get("error")
+            super().__init__(message)
+
+    class ServiceValidationError(HomeAssistantError):
+        """Stub Home Assistant's user-input service error."""
 
     ha_exc = types.ModuleType("homeassistant.exceptions")
     ha_exc.HomeAssistantError = HomeAssistantError
+    ha_exc.ServiceValidationError = ServiceValidationError
 
     # ---- homeassistant.const ----
     class Platform(str, enum.Enum):
@@ -77,6 +94,7 @@ def _stub_homeassistant():
         BINARY_SENSOR = "binary_sensor"
         BUTTON = "button"
         SELECT = "select"
+        SCENE = "scene"
         SENSOR = "sensor"
         SWITCH = "switch"
         LIGHT = "light"
@@ -86,6 +104,7 @@ def _stub_homeassistant():
         DIAGNOSTIC = "diagnostic"
 
     ha_const = types.ModuleType("homeassistant.const")
+    ha_const.ATTR_DEVICE_ID = "device_id"
     ha_const.CONF_MAC = "mac"
     ha_const.EVENT_HOMEASSISTANT_STARTED = "homeassistant_started"
     ha_const.Platform = Platform
@@ -100,10 +119,11 @@ def _stub_homeassistant():
 
     # ---- homeassistant.config_entries ----
     class _FakeConfigEntry:
-        def __init__(self, data=None, options=None):
+        def __init__(self, data=None, options=None, version=1):
             self.data = data or {}
             self.options = options or {}
             self.entry_id = "test_entry_id"
+            self.version = version
 
     class _FakeConfigFlow:
         # HA uses ConfigFlow(domain=DOMAIN) as a class keyword arg.
@@ -141,6 +161,7 @@ def _stub_homeassistant():
     ha_bt.async_ble_device_from_address = MagicMock(return_value=None)
     ha_bt.async_last_service_info = MagicMock(return_value=None)
     ha_bt.async_scanner_by_source = MagicMock(return_value=None)
+    ha_bt.async_scanner_devices_by_address = MagicMock(return_value=[])
     ha_bt.async_register_callback = MagicMock(return_value=lambda: None)
 
     ha_comp = types.ModuleType("homeassistant.components")
@@ -183,8 +204,20 @@ def _stub_homeassistant():
         def _async_write_ha_state(self):
             pass
 
-        async def async_will_remove_from_hass(self):
+        async def async_added_to_hass(self):
             pass
+
+        def async_on_remove(self, callback):
+            callbacks = getattr(self, "_on_remove_callbacks", None)
+            if callbacks is None:
+                callbacks = []
+                self._on_remove_callbacks = callbacks
+            callbacks.append(callback)
+
+        async def async_will_remove_from_hass(self):
+            for callback in reversed(getattr(self, "_on_remove_callbacks", [])):
+                callback()
+            self._on_remove_callbacks = []
 
     ha_entity = types.ModuleType("homeassistant.helpers.entity")
     ha_entity.Entity = _FakeEntity
@@ -250,6 +283,13 @@ def _stub_homeassistant():
     ha_select = types.ModuleType("homeassistant.components.select")
     ha_select.SelectEntity = _FakeSelectEntity
 
+    # ---- homeassistant.components.scene ----
+    class _FakeScene(_FakeEntity):
+        pass
+
+    ha_scene = types.ModuleType("homeassistant.components.scene")
+    ha_scene.Scene = _FakeScene
+
     # ---- homeassistant.components.switch ----
     class _FakeSwitchEntity(_FakeEntity):
         pass
@@ -275,6 +315,7 @@ def _stub_homeassistant():
         BRIGHTNESS = "brightness"
         RGB = "rgb"
         RGBW = "rgbw"
+        WHITE = "white"
 
     class LightEntityFeature(enum.IntFlag):
         EFFECT = 4
@@ -298,6 +339,7 @@ def _stub_homeassistant():
     ha_light.ATTR_EFFECT = "effect"
     ha_light.ATTR_RGB_COLOR = "rgb_color"
     ha_light.ATTR_RGBW_COLOR = "rgbw_color"
+    ha_light.ATTR_WHITE = "white"
 
     # ---- homeassistant.components.websocket_api ----
     ha_ws = types.ModuleType("homeassistant.components.websocket_api")
@@ -345,6 +387,7 @@ def _stub_homeassistant():
         "homeassistant.components.number": ha_number,
         "homeassistant.components.sensor": ha_sensor,
         "homeassistant.components.select": ha_select,
+        "homeassistant.components.scene": ha_scene,
         "homeassistant.components.switch": ha_switch,
         "homeassistant.components.binary_sensor": ha_bs,
         "homeassistant.components.light": ha_light,

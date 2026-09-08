@@ -6,6 +6,7 @@
 - [ ] All PR checks pass
 - [ ] `manifest.json` version matches the intended release version
 - [ ] `CHANGELOG.md` has an entry for this version with today's date
+- [ ] `docs/releases/vX.Y.Z.md` contains reviewed, curated release notes
 - [ ] Manually tested on a real Fluval light (or all changes are non-functional)
 - [ ] No debug/temporary code left in
 
@@ -16,4 +17,4 @@
 4. HACS users will see the update after HACS refreshes release metadata
 
 ## What's included
-<!-- Paste the relevant CHANGELOG section here for quick review -->
+<!-- Summarize the changes and link the curated release notes for review -->

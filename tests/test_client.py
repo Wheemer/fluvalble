@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from custom_components.fluvalble.core import protocol
+from custom_components.fluvalble.core import encryption, protocol
 from custom_components.fluvalble.core import client as client_module
 from custom_components.fluvalble.core.client import Client
 
@@ -62,7 +62,12 @@ class _FakeTask:
         return None
 
 
-def _make_client(address="AA:BB:CC:DD:EE:FF", *, active_time=120, ping_interval=10):
+def _make_client(
+    address="AA:BB:CC:DD:EE:FF",
+    *,
+    active_time=120,
+    ping_interval=10,
+):
     ble_device = MagicMock()
     ble_device.address = address
     with patch("asyncio.create_task", side_effect=lambda coro: _FakeTask(coro)):
@@ -112,14 +117,29 @@ def _classic_characteristics():
     ]
 
 
-def test_old_protocol_notify_callback_flushes_short_final_notifications():
+def test_old_protocol_notify_callback_ignores_malformed_short_notifications():
     client = _make_client()
     update_callback = MagicMock()
     client.update_callback = update_callback
 
     client.notify_callback(MagicMock(), bytearray([0x54, 0x55]))
 
-    update_callback.assert_called_once_with(b"")
+    update_callback.assert_not_called()
+
+
+def test_old_protocol_notify_callback_reassembles_until_frame_is_valid():
+    client = _make_client()
+    update_callback = MagicMock(return_value=True)
+    client.update_callback = update_callback
+    packet = protocol.old_packet(protocol.OLD_READ_PARAMS + bytes((0, 1, 0)) + bytes(24))
+
+    for chunk in (packet[:15], packet[15:30], packet[30:]):
+        encoded = bytearray.fromhex("54")
+        encoded.extend(((len(chunk) + 1) ^ 0x54, 0x54))
+        encoded.extend(chunk)
+        client.notify_callback(MagicMock(), encoded)
+
+    update_callback.assert_called_once_with(packet)
 
 
 def test_raw_facebd_notify_callback_forwards_cbor_payload():
@@ -146,13 +166,88 @@ def test_plant_pro_notify_callback_forwards_d2_status_frame():
     assert client.last_confirmed_state == {protocol.SPP_SWITCH_KEY: True}
 
 
+def test_plant_pro_notify_callback_reassembles_fragmented_status_dump():
+    client = _make_client()
+    client.raw_facebd = True
+    client.plant_pro_spp = True
+    update_callback = MagicMock(return_value=True)
+    client.update_callback = update_callback
+    status = bytes((protocol.SPP_STATUS_HEADER,)) + protocol.cbor_map(
+        {
+            protocol.SPP_SWITCH_KEY: True,
+            protocol.SPP_PRO_SCHEDULE_KEY: bytes(range(57)),
+        }
+    )
+
+    for chunk in (status[:20], status[20:40], status[40:]):
+        client.notify_callback(MagicMock(), bytearray(chunk))
+
+    update_callback.assert_called_once_with(status)
+    assert client.raw_receive_buffer == b""
+    assert client.last_confirmed_state == {
+        protocol.SPP_SWITCH_KEY: True,
+        protocol.SPP_PRO_SCHEDULE_KEY: bytes(range(57)),
+    }
+
+
+def test_plant_pro_new_status_header_replaces_incomplete_frame():
+    client = _make_client()
+    client.raw_facebd = True
+    client.plant_pro_spp = True
+    update_callback = MagicMock(return_value=True)
+    client.update_callback = update_callback
+
+    client.notify_callback(MagicMock(), bytearray.fromhex("d2 a2 02 f5 0d 58 39"))
+    replacement = bytes.fromhex("d2 a1 02 f4")
+    client.notify_callback(MagicMock(), bytearray(replacement))
+
+    update_callback.assert_called_once_with(replacement)
+    assert client.raw_receive_buffer == b""
+    assert client.last_confirmed_state == {protocol.SPP_SWITCH_KEY: False}
+
+
+def test_plant_pro_fragment_may_begin_with_d2_data_byte():
+    client = _make_client()
+    client.raw_facebd = True
+    client.plant_pro_spp = True
+    update_callback = MagicMock(return_value=True)
+    client.update_callback = update_callback
+    status = bytes((protocol.SPP_STATUS_HEADER,)) + protocol.cbor_map(
+        {protocol.SPP_PRO_SCHEDULE_KEY: bytes((0xD2, *range(30)))}
+    )
+    continuation = status.index(bytes((0xD2,)), 1)
+
+    client.notify_callback(MagicMock(), bytearray(status[:continuation]))
+    client.notify_callback(MagicMock(), bytearray(status[continuation:]))
+
+    update_callback.assert_called_once_with(status)
+    assert client.raw_receive_buffer == b""
+
+
+def test_plant_pro_oversized_incomplete_status_is_discarded():
+    client = _make_client()
+    client.raw_facebd = True
+    client.plant_pro_spp = True
+    update_callback = MagicMock()
+    client.update_callback = update_callback
+
+    client.notify_callback(MagicMock(), bytearray.fromhex("d2 bf"))
+    client.notify_callback(
+        MagicMock(),
+        bytearray(client_module.MAX_RAW_RECEIVE_BUFFER),
+    )
+
+    update_callback.assert_not_called()
+    assert client.raw_receive_buffer == b""
+
+
 def test_send_now_paces_commands_for_resolved_transport():
     asyncio.run(_async_test_send_now_paces_commands_for_resolved_transport())
 
 
 async def _async_test_send_now_paces_commands_for_resolved_transport():
     cases = (
-        (_classic_characteristics(), client_module.CLASSIC_COMMAND_GAP),
+        (_classic_characteristics(), client_module.COMMAND_GAP),
         (_facebd_characteristics(), client_module.COMMAND_GAP),
         (_plant_pro_characteristics(), client_module.COMMAND_GAP),
     )
@@ -190,14 +285,72 @@ async def _async_test_write_packet_prefers_write_without_response():
     characteristic.properties = ["write", "write-without-response"]
     client._get_characteristic = MagicMock(return_value=characteristic)
 
-    with patch(
-        "custom_components.fluvalble.core.client.protocol.encrypted_old_packet",
-        return_value=bytearray(b"\x54\x01"),
-    ):
-        await client._write_packet("00001001-0000-1000-8000-00805F9B34FB", bytes([0x68, 0x03, 0x01, 0x6A]))
+    await client._write_packet("00001001-0000-1000-8000-00805F9B34FB", bytes([0x68, 0x03, 0x01, 0x6A]))
 
     kwargs = mock_client.write_gatt_char.await_args.kwargs
     assert kwargs["response"] is False
+    assert kwargs["data"][0] == 0x54
+    assert encryption.decode_message(kwargs["data"]) == bytes.fromhex("68 03 01 6a")
+
+
+def test_classic_write_packet_encodes_every_command_at_final_gatt_boundary():
+    asyncio.run(_async_test_classic_write_packet_encodes_every_command_at_final_gatt_boundary())
+
+
+async def _async_test_classic_write_packet_encodes_every_command_at_final_gatt_boundary():
+    client = _make_client()
+    mock_client = MagicMock()
+    mock_client.write_gatt_char = AsyncMock()
+    client.client = mock_client
+    characteristic = MagicMock(properties=["write-without-response"])
+    client._get_characteristic = MagicMock(return_value=characteristic)
+    packets = (
+        protocol.old_switch_packet(False),
+        protocol.old_switch_packet(True),
+        protocol.old_read_params_packet(),
+        protocol.old_mode_packet(2),
+        protocol.old_find_packet(),
+        protocol.old_weather_effect_packet(11),
+        protocol.old_clock_packet(),
+    )
+
+    for packet in packets:
+        await client._write_packet(client_module.LEGACY_COMMAND_WRITE_UUIDS[0], packet)
+
+    writes = [bytes(call.kwargs["data"]) for call in mock_client.write_gatt_char.await_args_list]
+    assert [encryption.decode_message(write) for write in writes] == list(packets)
+    assert all(write[:1] == b"\x54" for write in writes)
+
+
+def test_classic_long_write_chunks_complete_frame_once():
+    asyncio.run(_async_test_classic_long_write_chunks_complete_frame_once())
+
+
+async def _async_test_classic_long_write_chunks_complete_frame_once():
+    client = _make_client()
+    mock_client = MagicMock()
+    mock_client.write_gatt_char = AsyncMock()
+    client.client = mock_client
+    characteristic = MagicMock(properties=["write-without-response"])
+    client._get_characteristic = MagicMock(return_value=characteristic)
+    packet = protocol.old_pro_schedule_packet(
+        [
+            {"minute": 0, "channel_1": 0, "channel_2": 10, "channel_3": 20, "channel_4": 30},
+            {"minute": 720, "channel_1": 40, "channel_2": 50, "channel_3": 60, "channel_4": 70},
+            {"minute": 1439, "channel_1": 80, "channel_2": 90, "channel_3": 100, "channel_4": 0},
+            {"minute": 1080, "channel_1": 20, "channel_2": 30, "channel_3": 40, "channel_4": 50},
+            {"minute": 1200, "channel_1": 10, "channel_2": 20, "channel_3": 30, "channel_4": 40},
+        ],
+        channel_count=4,
+    )
+
+    with patch("custom_components.fluvalble.core.client.asyncio.sleep", new=AsyncMock()):
+        await client._write_packet(client_module.LEGACY_COMMAND_WRITE_UUIDS[0], packet)
+
+    writes = [bytes(call.kwargs["data"]) for call in mock_client.write_gatt_char.await_args_list]
+    decoded = [encryption.decode_message(write) for write in writes]
+    assert decoded == [packet[:15], packet[15:30], packet[30:]]
+    assert b"".join(decoded) == packet
 
 
 def test_facebd_write_packet_chunks_native_schedule_at_att_limit():
@@ -226,6 +379,10 @@ async def _async_test_facebd_write_packet_chunks_native_schedule_at_att_limit():
         packet[20:40],
         packet[40:],
     ]
+    assert [call.args[0] for call in sleep.await_args_list] == [
+        client_module.CHUNK_WRITE_GAP,
+        client_module.CHUNK_WRITE_GAP,
+    ]
     assert all(call.kwargs["response"] is False for call in mock_client.write_gatt_char.await_args_list)
     assert sleep.await_count == 2
 
@@ -250,13 +407,24 @@ def test_plant_pro_profile_prefers_spp_endpoint_over_legacy():
     asyncio.run(_async_test_plant_pro_profile_prefers_spp_endpoint_over_legacy())
 
 
+def test_legacy_plant_pro_spp_name_remains_synchronized():
+    client = _make_client()
+
+    client.spp_transport = True
+    assert client.plant_pro_spp is True
+
+    client.plant_pro_spp = False
+    assert client.spp_transport is False
+
+
 async def _async_test_plant_pro_profile_prefers_spp_endpoint_over_legacy():
     client = _make_client()
     client.client = _FakeGattClient(_plant_pro_characteristics())
 
     await client._resolve_characteristics()
 
-    assert client.profile == "plant_pro_spp"
+    assert client.profile == "current_spp"
+    assert client.spp_transport is True
     assert client.plant_pro_spp is True
     assert client.raw_facebd is True
     assert client.wifi_facebd is False
@@ -292,7 +460,7 @@ async def _async_test_send_now_writes_only_facebd01(monkeypatch):
     assert client.last_write_verified is True
 
 
-def test_unverified_facebd_command_is_retried_and_reports_mismatch(monkeypatch):
+def test_unverified_facebd_command_is_not_duplicated_and_reports_mismatch(monkeypatch):
     asyncio.run(_async_test_unverified_facebd_command(monkeypatch))
 
 
@@ -313,7 +481,7 @@ async def _async_test_unverified_facebd_command(monkeypatch):
         expected_state={protocol.WIFI_SWITCH_KEY: True},
     )
 
-    assert len(gatt.writes) == client_module.UNVERIFIED_WRITE_COPIES
+    assert len(gatt.writes) == 1
     assert client.last_write_verified is False
     assert client.last_verification_mismatches == {
         protocol.WIFI_SWITCH_KEY: {
@@ -321,6 +489,34 @@ async def _async_test_unverified_facebd_command(monkeypatch):
             "confirmed": False,
         }
     }
+
+
+def test_facebd_command_without_observable_state_is_not_duplicated(monkeypatch):
+    asyncio.run(_async_test_facebd_command_without_observable_state(monkeypatch))
+
+
+async def _async_test_facebd_command_without_observable_state(monkeypatch):
+    monkeypatch.setattr(client_module, "POST_WRITE_STATE_DELAY", 0)
+    gatt = _FakeGattClient(_facebd_characteristics())
+    client = _make_client()
+    client.client = gatt
+    client.update_callback = lambda data: protocol.decode_cbor_map(data) is not None
+    client.ping = MagicMock()
+    await client._resolve_characteristics()
+
+    assert await client.send_now(protocol.wifi_find_packet(), expected_state=None)
+
+    assert len(gatt.writes) == 1
+    assert client.last_write_verified is False
+    assert client.last_expected_state == {}
+
+
+def test_state_verification_does_not_treat_boolean_as_integer():
+    client = _make_client()
+    client._observed_state = {protocol.WIFI_SWITCH_KEY: 1}
+
+    assert not client._state_matches({protocol.WIFI_SWITCH_KEY: True})
+    assert client.last_verification_mismatches == {protocol.WIFI_SWITCH_KEY: {"expected": True, "confirmed": 1}}
 
 
 def test_send_now_writes_raw_plant_pro_command_and_verifies_status(monkeypatch):
@@ -408,6 +604,7 @@ async def _async_test_raw_connect_initialization_follows_apk_order():
     client.wake_read_uuid = None
     client.init_write_uuid = None
     connected = SimpleNamespace(is_connected=True)
+    client.client = connected
     client._ensure_client = AsyncMock(return_value=connected)
     client.ping = MagicMock()
     events = []
@@ -445,6 +642,7 @@ async def _async_test_classic_connect_initialization_follows_apk_order():
     client.wake_read_uuid = None
     client.init_write_uuid = "classic-init"
     connected = SimpleNamespace(is_connected=True)
+    client.client = connected
     client._ensure_client = AsyncMock(return_value=connected)
     client.ping = MagicMock()
     events = []
@@ -467,6 +665,32 @@ async def _async_test_classic_connect_initialization_follows_apk_order():
 
     assert events == ["clock", "state", "finish"]
     client._write_packet.assert_awaited_once_with("classic-init", protocol.old_read_params_packet())
+
+
+def test_session_initialization_runs_once_per_physical_connection():
+    asyncio.run(_async_test_session_initialization_runs_once_per_physical_connection())
+
+
+async def _async_test_session_initialization_runs_once_per_physical_connection():
+    client = _make_client()
+    connected = SimpleNamespace(is_connected=True)
+    client.client = connected
+    client.raw_facebd = False
+    client.init_write_uuid = None
+    ready = AsyncMock()
+    state_ready = AsyncMock()
+    client.ready_callback = ready
+    client.state_ready_callback = state_ready
+
+    assert await client._initialize_session(connected)
+    assert await client._initialize_session(connected)
+    ready.assert_awaited_once()
+    state_ready.assert_awaited_once_with({})
+
+    client._session_initialized = False
+    assert await client._initialize_session(connected)
+    assert ready.await_count == 2
+    assert state_ready.await_count == 2
 
 
 def test_device_provider_refreshes_adapter_route():

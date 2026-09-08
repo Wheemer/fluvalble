@@ -10,7 +10,11 @@ import voluptuous as vol
 
 from homeassistant.components import bluetooth
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigFlowResult
+
+try:
+    from homeassistant.config_entries import ConfigFlowResult
+except ImportError:  # Home Assistant before 2024.4
+    from homeassistant.data_entry_flow import FlowResult as ConfigFlowResult
 
 try:
     from homeassistant.config_entries import OptionsFlowWithReload as OptionsFlowBase
@@ -22,12 +26,15 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import format_mac
 
 from .core import (
+    CONFIG_ENTRY_VERSION,
     CONF_ACTIVE_TIME,
     CONF_LAMP_PROFILE,
     CONF_PING_INTERVAL,
+    CONF_RESTORE_PREVIOUS_MODE,
     DEFAULT_ACTIVE_TIME,
     DEFAULT_LAMP_PROFILE,
     DEFAULT_PING_INTERVAL,
+    DEFAULT_RESTORE_PREVIOUS_MODE,
     DOMAIN,
     LAMP_PROFILE_AQUASKY,
     LAMP_PROFILE_AQUASKY3,
@@ -76,7 +83,16 @@ OPTIONS_SCHEMA = vol.Schema(
             int,
             vol.Range(min=5, max=60),
         ),
-        vol.Optional(CONF_ACTIVE_TIME, default=DEFAULT_ACTIVE_TIME): validate_active_time,
+        # Keep the form schema serializable by Home Assistant. The 1-29 gap is
+        # enforced explicitly in the options step below.
+        vol.Optional(CONF_ACTIVE_TIME, default=DEFAULT_ACTIVE_TIME): vol.All(
+            int,
+            vol.Range(min=0, max=600),
+        ),
+        vol.Optional(
+            CONF_RESTORE_PREVIOUS_MODE,
+            default=DEFAULT_RESTORE_PREVIOUS_MODE,
+        ): bool,
     }
 )
 
@@ -144,7 +160,7 @@ def _device_display_name(
 async def _get_discovered_devices(
     hass: HomeAssistant,
 ) -> list[bluetooth.BluetoothServiceInfoBleak]:
-    """Return only devices that look like Fluval lights (by service UUID or name)."""
+    """Return advertisements with an APK-supported Fluval light product ID."""
     try:
         get_discovered = getattr(bluetooth, "async_discovered_service_info", None)
         if not get_discovered:
@@ -152,8 +168,8 @@ async def _get_discovered_devices(
         all_devices = get_discovered(hass, connectable=True)
     except Exception:  # noqa: BLE001
         return []
-    # Only show devices that advertise the Fluval service or have "Fluval" in the name,
-    # so the list isn't full of random BLE devices that are hard to identify.
+    # The manifest's names and service UUIDs only wake the config flow. Apply
+    # the APK's product-ID gate before showing any device to the user.
     return [info for info in all_devices if _is_likely_fluval(info)]
 
 
@@ -183,7 +199,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any], ble_name: st
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Fluval Aquarium LED."""
 
-    VERSION = 1
+    VERSION = CONFIG_ENTRY_VERSION
 
     def __init__(self) -> None:
         super().__init__()
@@ -212,8 +228,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._mac_already_configured(mac):
             return self.async_abort(reason="already_configured")
 
-        # Secondary filter after manifest matchers — abort anything that isn't
-        # a real Fluval LED (manifest wildcards can still be broad).
+        # Secondary filter after manifest matchers. The APK accepts lights by
+        # product ID, not by a brand-looking name or a shared service UUID.
         adv = discovery_info.advertisement
         local_name = (adv.local_name if adv else None) or discovery_info.name
         if not is_likely_fluval(local_name, adv):
@@ -342,22 +358,45 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Return the options flow handler."""
-        return OptionsFlowHandler()
+        if hasattr(config_entries, "OptionsFlowWithReload"):
+            return OptionsFlowHandler()
+        return OptionsFlowHandler(config_entry)
 
 
 class OptionsFlowHandler(OptionsFlowBase):
     """Handle options and let Home Assistant reload the config entry once."""
 
+    def __init__(self, legacy_config_entry: config_entries.ConfigEntry | None = None) -> None:
+        super().__init__()
+        self._legacy_config_entry = legacy_config_entry
+
+    def _config_entry(self) -> config_entries.ConfigEntry:
+        """Return the entry on both legacy and current options-flow APIs."""
+        if self._legacy_config_entry is not None:
+            return self._legacy_config_entry
+        return self.config_entry
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Show and handle the options form."""
         if user_input is not None:
+            try:
+                validate_active_time(user_input[CONF_ACTIVE_TIME])
+            except vol.Invalid:
+                return self.async_show_form(
+                    step_id="init",
+                    data_schema=self.add_suggested_values_to_schema(
+                        OPTIONS_SCHEMA,
+                        user_input,
+                    ),
+                    errors={CONF_ACTIVE_TIME: "invalid_active_time"},
+                )
             return self.async_create_entry(title="", data=user_input)
 
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
                 OPTIONS_SCHEMA,
-                self.config_entry.options,
+                self._config_entry().options,
             ),
         )
 

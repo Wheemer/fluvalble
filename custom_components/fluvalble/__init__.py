@@ -17,13 +17,14 @@ from homeassistant import config_entries
 from homeassistant.components import bluetooth
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_MAC, EVENT_HOMEASSISTANT_STARTED, Platform
+from homeassistant.const import ATTR_DEVICE_ID, CONF_MAC, EVENT_HOMEASSISTANT_STARTED, Platform
 from homeassistant.core import CoreState, HomeAssistant, ServiceCall, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, format_mac
 from homeassistant.helpers.storage import Store
 from .core import (
+    CONFIG_ENTRY_VERSION,
     CONF_ACTIVE_TIME,
     CONF_PING_INTERVAL,
     DEFAULT_ACTIVE_TIME,
@@ -42,9 +43,48 @@ except ImportError:  # pragma: no cover - stubbed test environments
 _LOGGER = logging.getLogger(__name__)
 
 
+def _action_validation_error(
+    translation_key: str,
+    **translation_placeholders: object,
+) -> ServiceValidationError:
+    """Return a translated error for invalid action input or targeting."""
+    return ServiceValidationError(
+        translation_domain=DOMAIN,
+        translation_key=translation_key,
+        translation_placeholders={key: str(value) for key, value in translation_placeholders.items()} or None,
+    )
+
+
+def _action_error(
+    translation_key: str,
+    **translation_placeholders: object,
+) -> HomeAssistantError:
+    """Return a translated error for an action that could not be completed."""
+    return HomeAssistantError(
+        translation_domain=DOMAIN,
+        translation_key=translation_key,
+        translation_placeholders={key: str(value) for key, value in translation_placeholders.items()} or None,
+    )
+
+
+def _command_error(message: str) -> HomeAssistantError:
+    """Return the shared translated fixture-command failure."""
+    return _action_error("command_failed", error=message)
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate historical Fluval config entries to the current schema."""
+    if entry.version == 1:
+        _LOGGER.info("Migrating Fluval config entry %s from version 1 to 2", entry.entry_id)
+        hass.config_entries.async_update_entry(entry, version=CONFIG_ENTRY_VERSION)
+        return True
+
+    return entry.version == CONFIG_ENTRY_VERSION
+
+
 @dataclass
 class FluvalRuntimeData:
-    """Runtime state for one Fluval config entry (stored on entry.runtime_data)."""
+    """Runtime state for one Fluval config entry."""
 
     device: Device | None = None
     pending_add_entities: dict[Platform, Any] = field(default_factory=dict)
@@ -64,6 +104,40 @@ def _runtime_device(entry_data: Any) -> Device | None:
     if isinstance(entry_data, dict):
         return entry_data.get("device")
     return None
+
+
+def entry_runtime_data(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> FluvalRuntimeData | None:
+    """Return runtime data on both current and older Home Assistant releases."""
+    runtime = getattr(entry, "runtime_data", None)
+    if isinstance(runtime, FluvalRuntimeData):
+        return runtime
+    legacy_runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    return legacy_runtime if isinstance(legacy_runtime, FluvalRuntimeData) else None
+
+
+def require_entry_runtime_data(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> FluvalRuntimeData:
+    """Return initialized runtime data for an entity platform."""
+    runtime = entry_runtime_data(hass, entry)
+    if runtime is None:
+        raise RuntimeError(f"Fluval runtime data is unavailable for config entry {entry.entry_id}")
+    return runtime
+
+
+def _store_entry_runtime_data(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    runtime: FluvalRuntimeData,
+) -> None:
+    """Store runtime data using APIs available on the running HA version."""
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = runtime
+    if hasattr(entry, "runtime_data"):
+        entry.runtime_data = runtime
 
 
 @callback
@@ -143,13 +217,21 @@ NATIVE_EFFECT_WEEKDAYS = (
     "saturday",
     "sunday",
 )
-RETIRED_CHANNEL_SUFFIXES = tuple(f"_channel_{index}" for index in range(1, 6))
+SERVICE_TARGET_FIELDS = {
+    vol.Optional(ATTR_DEVICE_ID): str,
+    # Retain the two historical selectors for saved automations and the bundled
+    # Lovelace cards. They are intentionally omitted from services.yaml so new
+    # action-editor calls use Home Assistant's device picker.
+    vol.Optional("entry_id"): str,
+    vol.Optional("mac"): str,
+}
 RETIRED_DIAGNOSTIC_SUFFIXES = (
     "_diagnostics",
     "_refresh_diagnostics",
     "_test_led_channels",
+    "_advertisement_source",
 )
-RETIRED_ENTITY_DOMAINS = frozenset({Platform.NUMBER.value})
+RETIRED_NUMBER_SUFFIXES = ("_transition",)
 RETIRED_SWITCH_SUFFIXES = ("_led_on_off",)
 RETIRED_SELECT_SUFFIXES = ("_schedule_mode",)
 
@@ -205,15 +287,17 @@ def _validate_time(value: object, label: str) -> tuple[int, int]:
 
 
 def _validate_native_levels(value: object, label: str) -> list[int]:
-    """Validate canonical levels or the previous Plant-specific aliases."""
+    """Validate four- or five-channel levels in APK fixture order."""
     if not isinstance(value, dict):
-        raise vol.Invalid(f"{label} must contain all five fixture channels")
-    if set(value) == set(NATIVE_SCHEDULE_CHANNELS):
+        raise vol.Invalid(f"{label} must contain all fixture channels")
+    if set(value) == set(NATIVE_SCHEDULE_CHANNELS[:4]):
+        source_channels = NATIVE_SCHEDULE_CHANNELS[:4]
+    elif set(value) == set(NATIVE_SCHEDULE_CHANNELS):
         source_channels = NATIVE_SCHEDULE_CHANNELS
     elif set(value) == set(LEGACY_PLANT_PRO_CHANNELS):
         source_channels = LEGACY_PLANT_PRO_CHANNELS
     else:
-        raise vol.Invalid(f"{label} must contain exactly {', '.join(NATIVE_SCHEDULE_CHANNELS)}")
+        raise vol.Invalid(f"{label} must contain exactly channel_1 through channel_4, or channel_1 through channel_5")
     levels = []
     for channel in source_channels:
         level = value[channel]
@@ -238,12 +322,16 @@ def _validate_native_auto_schedule(value: object) -> dict[str, Any]:
         if isinstance(ramp, bool) or not isinstance(ramp, int) or not 0 <= ramp <= 240:
             raise vol.Invalid(f"{label} must be an integer from 0 to 240 minutes")
         ramps.append(ramp)
+    day_levels = _validate_native_levels(value["day"], "day")
+    night_levels = _validate_native_levels(value["night"], "night")
+    if len(day_levels) != len(night_levels):
+        raise vol.Invalid("Auto day and night levels must use the same fixture channel count")
     return {
         "sunrise": (*sunrise, ramps[0]),
         "sunset": (*sunset, ramps[1]),
         "sleep": sleep,
-        "day_levels": _validate_native_levels(value["day"], "day"),
-        "night_levels": _validate_native_levels(value["night"], "night"),
+        "day_levels": day_levels,
+        "night_levels": night_levels,
     }
 
 
@@ -258,11 +346,16 @@ def _validate_native_pro_points(value: object) -> list[dict[str, Any]]:
             f"{MIN_NATIVE_PRO_SCHEDULE_POINTS} to {MAX_NATIVE_PRO_SCHEDULE_POINTS} points"
         )
     points = []
+    channel_count: int | None = None
     for point in value:
         if not isinstance(point, dict) or "time" not in point:
-            raise vol.Invalid("Each Professional point must contain time and all five channels")
+            raise vol.Invalid("Each Professional point must contain time and all fixture channels")
         hour, minute = _validate_time(point["time"], "point time")
         levels = _validate_native_levels({key: item for key, item in point.items() if key != "time"}, "point")
+        if channel_count is None:
+            channel_count = len(levels)
+        elif len(levels) != channel_count:
+            raise vol.Invalid("All Professional points must use the same fixture channel count")
         points.append({"hour": hour, "minute": minute, "levels": levels})
     return points
 
@@ -323,8 +416,7 @@ def _validate_manual_preset_slot(value: object) -> int:
 
 CHANNEL_SERVICE_SCHEMA = vol.Schema(
     {
-        vol.Optional("entry_id"): str,
-        vol.Optional("mac"): str,
+        **SERVICE_TARGET_FIELDS,
         vol.Optional("red"): vol.All(int, vol.Range(min=0, max=100)),
         vol.Optional("green"): vol.All(int, vol.Range(min=0, max=100)),
         vol.Optional("blue"): vol.All(int, vol.Range(min=0, max=100)),
@@ -337,8 +429,7 @@ CHANNEL_SERVICE_SCHEMA = vol.Schema(
 
 PREVIEW_SERVICE_SCHEMA = vol.Schema(
     {
-        vol.Optional("entry_id"): str,
-        vol.Optional("mac"): str,
+        **SERVICE_TARGET_FIELDS,
         vol.Required("points"): _validate_schedule_points,
         vol.Optional("duration", default=60): vol.All(int, vol.Range(min=1, max=3600)),
         vol.Optional("step_seconds", default=2): vol.All(int, vol.Range(min=1, max=300)),
@@ -347,24 +438,17 @@ PREVIEW_SERVICE_SCHEMA = vol.Schema(
 
 NATIVE_PREVIEW_SERVICE_SCHEMA = vol.Schema(
     {
-        vol.Optional("entry_id"): str,
-        vol.Optional("mac"): str,
+        **SERVICE_TARGET_FIELDS,
         vol.Required("minute"): vol.All(int, vol.Range(min=0, max=1439)),
         vol.Required("schedule_type"): vol.In(["auto", "professional"]),
     }
 )
 
-STOP_PREVIEW_SERVICE_SCHEMA = vol.Schema(
-    {
-        vol.Optional("entry_id"): str,
-        vol.Optional("mac"): str,
-    }
-)
+STOP_PREVIEW_SERVICE_SCHEMA = vol.Schema(SERVICE_TARGET_FIELDS)
 
 SCHEDULE_SERVICE_SCHEMA = vol.Schema(
     {
-        vol.Optional("entry_id"): str,
-        vol.Optional("mac"): str,
+        **SERVICE_TARGET_FIELDS,
         vol.Required("points"): _validate_schedule_points,
         vol.Optional("mode"): vol.In(["manual", "native"]),
     }
@@ -372,32 +456,28 @@ SCHEDULE_SERVICE_SCHEMA = vol.Schema(
 
 NATIVE_AUTO_SCHEDULE_SERVICE_SCHEMA = vol.Schema(
     {
-        vol.Optional("entry_id"): str,
-        vol.Optional("mac"): str,
+        **SERVICE_TARGET_FIELDS,
         vol.Required("schedule"): _validate_native_auto_schedule,
     }
 )
 
 NATIVE_PRO_SCHEDULE_SERVICE_SCHEMA = vol.Schema(
     {
-        vol.Optional("entry_id"): str,
-        vol.Optional("mac"): str,
+        **SERVICE_TARGET_FIELDS,
         vol.Required("points"): _validate_native_pro_points,
     }
 )
 
 NATIVE_EFFECT_SCHEDULE_SERVICE_SCHEMA = vol.Schema(
     {
-        vol.Optional("entry_id"): str,
-        vol.Optional("mac"): str,
+        **SERVICE_TARGET_FIELDS,
         vol.Required("windows"): _validate_native_effect_windows,
     }
 )
 
 MANUAL_PRESET_SERVICE_SCHEMA = vol.Schema(
     {
-        vol.Optional("entry_id"): str,
-        vol.Optional("mac"): str,
+        **SERVICE_TARGET_FIELDS,
         vol.Required("slot"): _validate_manual_preset_slot,
     }
 )
@@ -405,7 +485,9 @@ MANUAL_PRESET_SERVICE_SCHEMA = vol.Schema(
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
+    Platform.NUMBER,
     Platform.SELECT,
+    Platform.SCENE,
     Platform.SENSOR,
     Platform.SWITCH,
     Platform.LIGHT,
@@ -434,12 +516,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
     if entry.unique_id != desired_unique_id:
         hass.config_entries.async_update_entry(entry, unique_id=desired_unique_id)
 
+    active_time = entry.options.get(CONF_ACTIVE_TIME, DEFAULT_ACTIVE_TIME)
     _migrate_legacy_registry_entries(hass, entry, mac)
+    _sync_connection_diagnostic_registry_entries(hass, entry, active_time)
     _cleanup_duplicate_devices(hass, entry, mac)
 
     runtime = FluvalRuntimeData()
-    entry.runtime_data = runtime
-    hass.data[DOMAIN][entry.entry_id] = runtime
+    _store_entry_runtime_data(hass, entry, runtime)
     last_discovery_log = 0.0
 
     def create_runtime_task(coroutine) -> asyncio.Task:
@@ -465,7 +548,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
         """Instantiate Device and add entities for any platforms that are already loaded."""
         _LOGGER.debug("Creating device for %s", mac)
         ping_interval = entry.options.get(CONF_PING_INTERVAL, DEFAULT_PING_INTERVAL)
-        active_time = entry.options.get(CONF_ACTIVE_TIME, DEFAULT_ACTIVE_TIME)
         device = Device(
             entry.title,
             service_info.device,
@@ -490,7 +572,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
         # device was available (they stashed their add_entities callback).
         from .binary_sensor import create_entities as sensor_entities  # noqa: PLC0415
         from .select import create_entities as select_entities  # noqa: PLC0415
+        from .scene import create_entities as scene_entities  # noqa: PLC0415
         from .light import create_entities as light_entities  # noqa: PLC0415
+        from .number import create_entities as number_entities  # noqa: PLC0415
         from .button import create_entities as button_entities  # noqa: PLC0415
         from .sensor import create_entities as diagnostics_entities  # noqa: PLC0415
         from .switch import create_entities as switch_entities  # noqa: PLC0415
@@ -498,7 +582,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> bo
         factories = {
             Platform.BINARY_SENSOR: sensor_entities,
             Platform.SELECT: select_entities,
+            Platform.SCENE: scene_entities,
             Platform.LIGHT: light_entities,
+            Platform.NUMBER: number_entities,
             Platform.BUTTON: button_entities,
             Platform.SENSOR: diagnostics_entities,
             Platform.SWITCH: switch_entities,
@@ -603,12 +689,11 @@ def _migrate_legacy_registry_entries(hass: HomeAssistant, entry: ConfigEntry, ma
     for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
         domain = str(getattr(entity, "domain", "") or str(entity.entity_id).partition(".")[0])
         unique_id = str(getattr(entity, "unique_id", ""))
-        retired_platform = domain in RETIRED_ENTITY_DOMAINS
+        retired_number = domain == Platform.NUMBER.value and unique_id.endswith(RETIRED_NUMBER_SUFFIXES)
         retired_switch = domain == Platform.SWITCH.value and unique_id.endswith(RETIRED_SWITCH_SUFFIXES)
         retired_select = domain == Platform.SELECT.value and unique_id.endswith(RETIRED_SELECT_SUFFIXES)
-        retired_channel = unique_id.endswith(RETIRED_CHANNEL_SUFFIXES)
         retired_diagnostics = unique_id.endswith(RETIRED_DIAGNOSTIC_SUFFIXES)
-        if retired_platform or retired_switch or retired_select or retired_channel or retired_diagnostics:
+        if retired_number or retired_switch or retired_select or retired_diagnostics:
             _LOGGER.info("Removing retired Fluval entity %s", entity.entity_id)
             registry.async_remove(entity.entity_id)
 
@@ -617,6 +702,34 @@ def _migrate_legacy_registry_entries(hass: HomeAssistant, entry: ConfigEntry, ma
         if getattr(device_entry, "serial_number", None) == mac:
             _LOGGER.info("Clearing MAC address from serial number for %s", device_entry.id)
             device_registry.async_update_device(device_entry.id, serial_number=None)
+
+
+@callback
+def _sync_connection_diagnostic_registry_entries(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    active_time: int,
+) -> None:
+    """Keep connection diagnostics available only when their values are meaningful."""
+    from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
+
+    registry = er.async_get(hass)
+    persistent = active_time == 0
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        unique_id = str(getattr(entity, "unique_id", ""))
+        is_rssi = unique_id.endswith("_rssi")
+        is_last_seen = unique_id.endswith("_last_seen")
+        if not is_rssi and not is_last_seen:
+            continue
+
+        disabled_by = getattr(entity, "disabled_by", None)
+        if is_rssi and persistent and disabled_by is None:
+            registry.async_update_entity(
+                entity.entity_id,
+                disabled_by=er.RegistryEntryDisabler.INTEGRATION,
+            )
+        elif disabled_by is er.RegistryEntryDisabler.INTEGRATION:
+            registry.async_update_entity(entity.entity_id, disabled_by=None)
 
 
 @callback
@@ -729,9 +842,26 @@ def _register_services(hass: HomeAssistant) -> None:
     if hass.data[DOMAIN].get(SERVICES_REGISTERED):
         return
 
-    def get_device(call: ServiceCall) -> Device:
-        entry_id = call.data.get("entry_id")
-        mac = (call.data.get("mac") or "").upper()
+    def target_entry_ids(data: dict) -> set[str] | None:
+        """Resolve a Home Assistant device target to its config entries."""
+        device_id = data.get(ATTR_DEVICE_ID)
+        if not device_id:
+            return None
+        device_entry = dr.async_get(hass).async_get(device_id)
+        if device_entry is None:
+            raise _action_validation_error("selected_device_missing")
+        entry_ids = set(getattr(device_entry, "config_entries", set()) or set())
+        if not entry_ids:
+            raise _action_validation_error("device_not_managed")
+        return entry_ids
+
+    def loaded_device_candidates(data: dict, device_entry_ids: set[str] | None = None) -> list[tuple[str, Device]]:
+        """Return loaded fixtures matching every supplied target identifier."""
+        entry_id = data.get("entry_id")
+        mac = (data.get("mac") or "").upper()
+        if device_entry_ids is None and data.get(ATTR_DEVICE_ID):
+            device_entry_ids = target_entry_ids(data)
+        candidates: list[tuple[str, Device]] = []
         for candidate_entry_id, entry_data in hass.data[DOMAIN].items():
             if candidate_entry_id in {
                 SERVICES_REGISTERED,
@@ -741,45 +871,49 @@ def _register_services(hass: HomeAssistant) -> None:
                 continue
             device = _runtime_device(entry_data)
             if device is None:
+                continue
+            if device_entry_ids is not None and candidate_entry_id not in device_entry_ids:
                 continue
             if entry_id and candidate_entry_id != entry_id:
                 continue
             if mac and device.mac.upper() != mac:
                 continue
-            return device
-        raise HomeAssistantError("No matching Fluval BLE device is ready")
+            candidates.append((candidate_entry_id, device))
+        return candidates
+
+    def get_device(call: ServiceCall) -> Device:
+        candidates = loaded_device_candidates(call.data)
+        if len(candidates) == 1:
+            return candidates[0][1]
+        if len(candidates) > 1:
+            raise _action_validation_error("select_one_light")
+        raise _action_error("light_unavailable")
 
     def get_entry_id(data: dict) -> str:
         entry_id = data.get("entry_id")
         mac = (data.get("mac") or "").upper()
-        for candidate_entry_id, entry_data in hass.data[DOMAIN].items():
-            if candidate_entry_id in {
-                SERVICES_REGISTERED,
-                STATIC_REGISTERED,
-                WEBSOCKET_REGISTERED,
-            }:
-                continue
-            device = _runtime_device(entry_data)
-            if device is None:
-                continue
-            if entry_id and candidate_entry_id == entry_id:
-                return candidate_entry_id
-            if mac and device is not None and device.mac.upper() == mac:
-                return candidate_entry_id
+        device_entry_ids = target_entry_ids(data)
+        candidates = {
+            candidate_entry_id for candidate_entry_id, _device in loaded_device_candidates(data, device_entry_ids)
+        }
 
-        for entry in hass.config_entries.async_entries(DOMAIN):
+        config_entries = getattr(hass, "config_entries", None)
+        entries = config_entries.async_entries(DOMAIN) if config_entries is not None else []
+        for entry in entries:
             entry_mac = (entry.data.get(CONF_MAC) or "").upper()
-            if entry_id and entry.entry_id == entry_id:
-                return entry.entry_id
-            if mac and entry_mac == mac:
-                return entry.entry_id
+            if device_entry_ids is not None and entry.entry_id not in device_entry_ids:
+                continue
+            if entry_id and entry.entry_id != entry_id:
+                continue
+            if mac and entry_mac != mac:
+                continue
+            candidates.add(entry.entry_id)
 
-        if not entry_id and not mac:
-            entries = hass.config_entries.async_entries(DOMAIN)
-            if entries:
-                return entries[0].entry_id
-
-        raise HomeAssistantError("No matching Fluval BLE config entry was found")
+        if len(candidates) == 1:
+            return candidates.pop()
+        if len(candidates) > 1:
+            raise _action_validation_error("select_one_light")
+        raise _action_validation_error("config_entry_not_found")
 
     async def async_set_channels(call: ServiceCall) -> None:
         device = get_device(call)
@@ -795,44 +929,46 @@ def _register_services(hass: HomeAssistant) -> None:
             if color in call.data
         }
         if not values:
-            raise HomeAssistantError("At least one channel value is required")
-        await device.async_set_channels(
+            raise _action_validation_error("channels_required")
+        if not await device.async_set_channels(
             values,
             transition=call.data["transition"],
             step_seconds=call.data["step_seconds"],
-        )
+        ):
+            raise _command_error(device.command_error_message())
 
     async def async_preview_schedule(call: ServiceCall) -> None:
         device = get_device(call)
-        await device.async_preview_schedule(
+        if not await device.async_preview_schedule(
             call.data["points"],
             duration=call.data["duration"],
             step_seconds=call.data["step_seconds"],
-        )
+        ):
+            raise _command_error(device.command_error_message())
 
     async def async_preview_native_schedule(call: ServiceCall) -> None:
         device = get_device(call)
         if not await device.async_preview_native_schedule(call.data["minute"], call.data["schedule_type"]):
-            raise HomeAssistantError(device.command_error_message())
+            raise _command_error(device.command_error_message())
 
     async def async_stop_preview(call: ServiceCall) -> None:
         device = get_device(call)
         if not await device.async_stop_preview():
-            raise HomeAssistantError(device.command_error_message())
+            raise _command_error(device.command_error_message())
 
     async def async_save_schedule(call: ServiceCall) -> None:
         entry_id = get_entry_id(call.data)
         mode = call.data.get("mode")
         if mode == "native" and not await _async_upload_native_schedule(hass, entry_id, call.data["points"]):
             device = _device_for_entry(hass, entry_id)
-            raise HomeAssistantError(
-                device.command_error_message() if device is not None else "Fluval BLE device is not loaded"
-            )
+            if device is None:
+                raise _action_error("light_unavailable")
+            raise _command_error(device.command_error_message())
         if mode == "manual" and not await _async_set_fixture_manual(hass, entry_id):
             device = _device_for_entry(hass, entry_id)
-            raise HomeAssistantError(
-                device.command_error_message() if device is not None else "Fluval BLE device is not loaded"
-            )
+            if device is None:
+                raise _action_error("light_unavailable")
+            raise _command_error(device.command_error_message())
         await _async_save_schedule(
             hass,
             entry_id,
@@ -843,21 +979,19 @@ def _register_services(hass: HomeAssistant) -> None:
     async def async_set_native_auto_schedule(call: ServiceCall) -> None:
         device = get_device(call)
         if not await device.async_set_native_auto_schedule(call.data["schedule"]):
-            raise HomeAssistantError(device.diagnostics.get("last_error") or "Unable to store the native Auto schedule")
+            raise _command_error(device.diagnostics.get("last_error") or "Unable to store the native Auto schedule")
 
     async def async_set_native_pro_schedule(call: ServiceCall) -> None:
         device = get_device(call)
         if not await device.async_set_native_pro_schedule(call.data["points"]):
-            raise HomeAssistantError(
+            raise _command_error(
                 device.diagnostics.get("last_error") or "Unable to store the native Professional schedule"
             )
 
     async def async_set_native_effect_schedule(call: ServiceCall) -> None:
         device = get_device(call)
         if not await device.async_set_native_effect_schedule(call.data["windows"]):
-            raise HomeAssistantError(
-                device.diagnostics.get("last_error") or "Unable to store the native effect schedule"
-            )
+            raise _command_error(device.diagnostics.get("last_error") or "Unable to store the native effect schedule")
         await _async_save_effect_schedule(
             hass,
             get_entry_id(call.data),
@@ -867,12 +1001,12 @@ def _register_services(hass: HomeAssistant) -> None:
     async def async_recall_manual_preset(call: ServiceCall) -> None:
         device = get_device(call)
         if not await device.async_recall_manual_preset(call.data["slot"]):
-            raise HomeAssistantError(device.command_error_message())
+            raise _command_error(device.command_error_message())
 
     async def async_save_manual_preset(call: ServiceCall) -> None:
         device = get_device(call)
         if not await device.async_save_manual_preset(call.data["slot"]):
-            raise HomeAssistantError(device.command_error_message())
+            raise _command_error(device.command_error_message())
 
     hass.services.async_register(
         DOMAIN,
@@ -1115,7 +1249,7 @@ def _native_schedule_readback(device: Device | None) -> dict[str, Any]:
         "effects": effects,
         "channels": [device.entity_name(channel) for channel in device.numbers()],
         "effect_options": [effect for effect in device.effect_list() if effect != EFFECT_NONE],
-        "effect_readback_complete": protocol_name in {"facebd", "plant_pro"},
+        "effect_readback_complete": protocol_name in {"facebd", "plant_pro", "spp"},
         "spectrum_profile": device.spectrum_profile(),
         "protocol": protocol_name,
         "read_at": device.diagnostics.get("native_schedule_readback_at"),
@@ -1274,7 +1408,7 @@ async def _async_save_effect_schedule(
     """Save the user-authored timed-effect windows without replacing channel schedules."""
     normalized = _normalize_effect_schedule(windows)
     if normalized is None:
-        raise HomeAssistantError("Unable to normalize the timed-effect schedule")
+        raise _action_error("effect_schedule_normalization_failed")
     store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
     data = await store.async_load() or {}
     schedules = data.setdefault("schedules", {})
@@ -1300,20 +1434,20 @@ def _device_for_entry(hass: HomeAssistant, entry_id: str) -> Device | None:
 async def async_set_schedule_mode(hass: HomeAssistant, entry_id: str, mode: str) -> None:
     """Set whether the saved curve is inactive or stored in the fixture."""
     if mode not in {"manual", "native"}:
-        raise HomeAssistantError(f"Unsupported fixture schedule mode: {mode}")
+        raise _action_validation_error("unsupported_schedule_mode", mode=mode)
 
     saved = await _async_load_schedule_data(hass, entry_id)
     points = saved.get("points") or []
     if mode == "native" and not await _async_upload_native_schedule(hass, entry_id, points):
         device = _device_for_entry(hass, entry_id)
-        raise HomeAssistantError(
-            device.command_error_message() if device is not None else "Fluval BLE device is not loaded"
-        )
+        if device is None:
+            raise _action_error("light_unavailable")
+        raise _command_error(device.command_error_message())
     if mode == "manual" and not await _async_set_fixture_manual(hass, entry_id):
         device = _device_for_entry(hass, entry_id)
-        raise HomeAssistantError(
-            device.command_error_message() if device is not None else "Fluval BLE device is not loaded"
-        )
+        if device is None:
+            raise _action_error("light_unavailable")
+        raise _command_error(device.command_error_message())
     await _async_save_schedule(hass, entry_id, points, mode=mode)
 
 
@@ -1409,20 +1543,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: FluvalConfigEntry) -> b
     if not unload_ok:
         return False
 
-    runtime = getattr(entry, "runtime_data", None)
-    if not isinstance(runtime, FluvalRuntimeData):
-        runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    runtime = entry_runtime_data(hass, entry)
 
     if isinstance(runtime, FluvalRuntimeData) and runtime.device is not None:
-        runtime.device.cancel_reachability_refresh()
-        if runtime.device.preview_task is not None or runtime.device.native_preview_active:
-            await runtime.device.async_stop_preview()
         tasks = list(runtime.background_tasks)
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         runtime.background_tasks.clear()
+
+        runtime.device.cancel_reachability_refresh()
+        await runtime.device.async_cancel_channel_mode_restore()
+        if runtime.device.preview_task is not None or runtime.device.native_preview_active:
+            await runtime.device.async_stop_preview()
         client = runtime.device.client
         if client is not None:
             try:
