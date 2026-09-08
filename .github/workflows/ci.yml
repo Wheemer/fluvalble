@@ -29,7 +29,9 @@ jobs:
           cache: pip
 
       - name: Install locked development dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install --upgrade ruff
 
       - name: Run Ruff (linter + formatter check)
         run: |

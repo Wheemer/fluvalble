@@ -20,6 +20,7 @@ This repository uses short-lived branches merged into `main`:
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+pip install --upgrade ruff
 pre-commit install
 
 # 2. Run the test suite
@@ -30,7 +31,11 @@ ruff check custom_components/ tests/
 ruff format --check custom_components/ tests/
 ```
 
-Direct development dependencies are pinned in `requirements.in`, and
+Ruff is intentionally unpinned: CI installs the latest compatible version on
+every run. Run `pip install --upgrade ruff` to update an existing local environment.
+Pre-commit uses that environment's Ruff rather than a separately pinned copy.
+
+Other direct development dependencies are pinned in `requirements.in`, and
 `requirements.txt` is the complete reproducible lock used by CI. After changing
 `requirements.in`, regenerate the lock with:
 
