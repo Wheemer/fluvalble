@@ -90,8 +90,7 @@ schedule/weather snapshots when returning from Manual to Auto or Pro.
 ## Earlier validation of scheduled-state reporting
 
 The following records the checks performed when scheduled-state reporting was
-introduced, before removal of HA schedule editing and cards. References to
-preview state and static resources below are historical, not current features.
+introduced.
 
 An isolated smoke check also passed against real Home Assistant 2024.1.0 and
 2026.7.2 (locally cached Docker images). It bootstrapped HA, added the light to
@@ -100,7 +99,7 @@ an entity platform, verified published assumed-state attributes and a real
 without duplicate device callbacks. Containers had networking disabled, a
 read-only candidate checkout, temporary configuration, and no Bluetooth devices.
 This validates entity-platform behavior, not a full Bluetooth config-entry setup.
-The expanded check also verified missing-clock and active-preview `unknown`
+The expanded check also verified missing-clock `unknown`
 states, explicit Off without clock data, and `unavailable` when the device has
 neither a client nor discovery data needed to attempt controls.
 
@@ -108,16 +107,15 @@ A separate real-HA config-entry check passed on both versions as well. It
 starts with a version-one entry and exercises migration, all platforms, 18
 registered entities, unload/setup and the public reload operation. Entity IDs
 remain stable, there is one light entity, entity-bound callbacks are removed,
-and Bluetooth subscription registration/unregistration stays balanced. Card
-static-path registration succeeds. Only the radio/discovery boundary and initial
+and Bluetooth subscription registration/unregistration stays balanced.
+Only the radio/discovery boundary and initial
 device construction are simulated; the HA entry manager and entity platforms
 are real. No BLE client is created.
 
-This exposed two existing HA 2024.1 compatibility failures, now repaired:
+This exposed a HA 2024.1 migration compatibility failure, now repaired:
 version-one migration uses direct version assignment on the legacy API (HA
-persists successful migrations), and static resources fall back to the actual
-legacy `register_static_path` method. Current HA retains its current APIs.
-Neither repair changes the minimum HA version or fixture protocol.
+persists successful migrations). Current HA retains its current APIs.
+This repair does not change the minimum HA version or fixture protocol.
 
 The lifecycle check also covers cached and delayed discovery, unloading before
 any discovery, and real HA light-service dispatch with simulated successful and

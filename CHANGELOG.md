@@ -32,8 +32,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Persistent-connection handling, its alternate diagnostic presentation, and
   the redundant Connection mode sensor.
 
-Users of retired cards or actions should follow the
-[schedule programming migration guide](docs/lovelace-cards.md).
+### Updating existing installations
+
+- Remove old custom cards and manually added
+  `/fluvalble/fluvalble-schedule-card.js` dashboard resources.
+- Remove retired actions from scripts and automations:
+  `fluvalble.save_schedule`, `fluvalble.set_native_auto_schedule`,
+  `fluvalble.set_native_pro_schedule`, `fluvalble.set_native_effect_schedule`,
+  `fluvalble.preview_schedule`, `fluvalble.preview_native_schedule`,
+  and `fluvalble.stop_preview`.
+- Local drafts are not uploaded or converted automatically. Use the schedule
+  saved on the fixture or recreate an unsaved draft in Fluval Connect.
+  Fixture memory and the integration entry are not erased.
+
+See [hardware schedules](docs/hardware-schedules.md) for the current workflow.
 
 ## [0.0.14] — 2026-09-08
 

@@ -98,8 +98,8 @@ from 5 to 60 seconds (default 10) while connected; it is separate from the idle
 connection window.
 
 The active connection window is configurable from 30 to 600 seconds, with a
-two-minute default. An idle session closes after this window; unlimited
-connections are no longer an option. FFF0/SPP fixtures permit one BLE central
+two-minute default. An idle session closes after this window. FFF0/SPP fixtures
+permit one BLE central
 at a time, so allow the idle window to expire before using Fluval Connect.
 
 Reachability remains true for five minutes after an advertisement, successful

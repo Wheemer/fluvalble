@@ -159,10 +159,6 @@ Newer transport families retain their existing device-reported behaviour.
 Open the integration's **Configure** dialog to adjust its BLE connection behavior.
 The **Active connection window** accepts `30`–`600` seconds, default `120`.
 Home Assistant releases an idle connection so Fluval Connect can connect.
-Previously unlimited settings migrate to 120 seconds. Integration-disabled
-advertisement sensors are restored; sensors disabled by you remain disabled.
-The redundant Connection mode sensor is removed automatically on setup;
-connection timing remains configurable here.
 
 The optional **Restore previous mode after channels reach zero** setting keeps
 exact channel-slider adjustments in Manual mode while any channel remains above
@@ -179,18 +175,16 @@ connecting with Fluval Connect. Only one controller may be supported at a time.
 
 ## Native fixture schedules
 
-Use **Fluval Connect** to program schedules directly on the light. The custom
-planner cards are retired; ordinary Home Assistant light controls, channel
-sliders, supported effects, mode selection and schedule readback remain.
+Use **Fluval Connect** to program schedules directly on the light. Home Assistant
+provides light controls, channel sliders, supported effects, mode selection and
+schedule readback.
 Select Auto or Professional to run the corresponding saved hardware schedule.
-Removing the cards and schedule-editing actions does not erase or rewrite schedules.
 
-See [schedule programming](docs/lovelace-cards.md) for migration guidance.
+See [hardware schedules](docs/hardware-schedules.md) for the programming workflow.
 
 Under **Developer tools → Actions**, the integration provides exact channel
 control and manual preset recall/save. Schedule programming, timed-weather
-editing, and schedule previews belong in Fluval Connect. Remove retired
-schedule actions from existing Home Assistant automations.
+editing, and schedule previews belong in Fluval Connect.
 
 Classic fixtures also expose their four fixture-resident manual presets as
 **Manual preset P1** through **P4** scene entities. Activating a scene recalls
