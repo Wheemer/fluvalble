@@ -144,15 +144,12 @@ scheduled output. The existing colour/channel controls remain available for
 manual adjustments. A successful explicit off command takes precedence over
 the expected schedule until power is turned on or a mode is selected again.
 Normal idle Bluetooth disconnections retain the read-back schedule and last
-clock synchronization. Missing readback or clock initialization, active preview,
+clock synchronization. Missing readback or clock initialization,
 or an active timed-weather window cannot provide this static output estimate.
 Enabling a weather schedule does not disable reporting outside its time window
-and selected weekdays. After a classic Auto, Pro or timed-weather schedule save, the integration discards
-the old forecast and requests fresh readback; a failed read cannot silently
-restore the old schedule. Selecting a mode also refreshes its schedule and weather
+and selected weekdays. Selecting a mode refreshes its schedule and weather
 settings together, including automatic returns from manual adjustments.
-Successful activation releases an earlier Off override,
-while saving without activation preserves it.
+Successful mode selection releases an earlier Off override.
 Power loss or changes made outside Home Assistant can also make an
 estimate inaccurate until the integration reconnects and reads the fixture again.
 Newer transport families retain their existing device-reported behaviour.
@@ -160,21 +157,12 @@ Newer transport families retain their existing device-reported behaviour.
 ### Integration options
 
 Open the integration's **Configure** dialog to adjust its BLE connection behavior.
-The **Active connection window** accepts `0` for a persistent connection or
-`30`–`600` seconds for an idle timeout. Persistent mode provides the lowest
-command latency and reconnects immediately after an unexpected drop. A finite
-window releases the Bluetooth connection when idle so the official Fluval app
-or a Fluval gateway can connect. The backward-compatible default is `120`
-seconds. The **Connection mode** diagnostic reports `Persistent` or the exact
-configured timeout, such as `30 seconds`.
-
-Signal strength and the timestamp diagnostic remain registered but are disabled
-in persistent mode because advertisement-derived values are not meaningful for
-an open GATT session. Selecting a finite timeout and reloading the integration
-restores those same entities, with their existing entity IDs and history.
-Entities disabled manually by the user remain disabled. In finite mode,
-the timestamp is shown as **Last seen** for the latest confirmed fixture
-activity.
+The **Active connection window** accepts `30`–`600` seconds, default `120`.
+Home Assistant releases an idle connection so Fluval Connect can connect.
+Previously unlimited settings migrate to 120 seconds. Integration-disabled
+advertisement sensors are restored; sensors disabled by you remain disabled.
+The redundant Connection mode sensor is removed automatically on setup;
+connection timing remains configurable here.
 
 The optional **Restore previous mode after channels reach zero** setting keeps
 exact channel-slider adjustments in Manual mode while any channel remains above
@@ -184,44 +172,30 @@ Auto or Professional mode that was active before the adjustment. The setting is
 off by default because restoring a hardware-scheduled mode can turn the fixture
 back on according to its stored schedule.
 
-Some newer fixtures, including Plant PRO and Plant 4.0, permit only one
-Bluetooth controller at a time. Persistent mode therefore prevents the official
-app or gateway from connecting while Home Assistant holds the connection, and
-it also continuously occupies one local-adapter or ESPHome proxy connection
-slot.
+Allow the idle timeout to elapse without Home Assistant commands before
+connecting with Fluval Connect. Only one controller may be supported at a time.
 
 ---
 
-## Lovelace dashboard cards
-
-Optional dashboard cards are available for Auto and Professional schedule editing,
-timed effects, fixture readback, and spectrum previews. See
-[`docs/lovelace-cards.md`](docs/lovelace-cards.md) for setup instructions,
-example YAML, usage notes, and preview safety guidance.
-
-The cards label channels for the detected product, show whether schedule data is
-local or confirmed by the fixture, and preview schedules without uploading
-unsaved editor values.
-
 ## Native fixture schedules
 
-Supported fixtures can keep schedules in their own memory. The integration
-provides actions for Auto and Professional schedules, timed effects, manual
-presets, and schedule previews under **Developer tools → Actions**. The action
-UI contains the available fields, complete examples, and a Fluval light picker.
-Existing automations and bundled cards that identify a light by config-entry ID
-or Bluetooth address remain compatible.
+Use **Fluval Connect** to program schedules directly on the light. The custom
+planner cards are retired; ordinary Home Assistant light controls, channel
+sliders, supported effects, mode selection and schedule readback remain.
+Select Auto or Professional to run the corresponding saved hardware schedule.
+Removing the cards and schedule-editing actions does not erase or rewrite schedules.
+
+See [schedule programming](docs/lovelace-cards.md) for migration guidance.
+
+Under **Developer tools → Actions**, the integration provides exact channel
+control and manual preset recall/save. Schedule programming, timed-weather
+editing, and schedule previews belong in Fluval Connect. Remove retired
+schedule actions from existing Home Assistant automations.
 
 Classic fixtures also expose their four fixture-resident manual presets as
 **Manual preset P1** through **P4** scene entities. Activating a scene recalls
 the exact channel values read from that slot. Saving remains an explicit action
 because it overwrites the selected slot in the physical fixture.
-
-Schedule previews use data already stored by the fixture and never upload
-unsaved editor values. Using the normal light, Mode controls, or channel sliders
-stops an active preview before applying the requested change. If stopping the
-preview fails, the channel change is not sent and Home Assistant reports the
-error. The dedicated Stop preview action restores the prior fixture mode.
 
 Supported fixtures also expose their onboard daylight-saving setting. See the
 [technical reference](docs/technical-reference.md) for controller limits,
@@ -241,7 +215,7 @@ After setup you'll see one device with entities like:
 | **Scenes** | Manual preset P1–P4 | Recalls one fixture-resident manual preset on classic controllers. |
 | **Button** | Identify | Runs the fixture's native FluvalConnect Find command so the physical light identifies itself. |
 | **Binary sensor** | Reachable | Fixture seen recently over BLE; raw GATT connection state remains available as an attribute. |
-| **Sensors** | Connection mode / Signal strength / Source / Last seen | Bluetooth diagnostics. Connection mode reports `Persistent` or the configured timeout. Signal strength and Last seen remain registered but are disabled in persistent mode; Source shows the active route's friendly name. |
+| **Sensors** | Signal strength / Source / Last seen | Bluetooth diagnostics. Source shows the active route's friendly name. |
 | **Button** | Sync Clock | Synchronizes the fixture's real-time clock with Home Assistant. |
 | **Switch** | Daylight saving time | Onboard setting available on supported AquaSky 3.0 fixtures. |
 
@@ -357,10 +331,9 @@ its APK sources are documented separately in
 
 **BLE connection lifecycle:**
 - Home Assistant selects the best connectable local adapter or ESPHome proxy on each connection.
-- Persistent mode keeps the session open; finite mode releases it after the configured idle window.
+- Connections release after the configured idle window.
 - Reachable describes recent fixture activity rather than only the current GATT connection.
-- Connection mode reports whether the GATT session is persistent or the exact idle timeout.
-- Signal strength and Last seen are integration-disabled in persistent mode and restored for a finite timeout; Source shows the active route's friendly name.
+- Signal strength and Last seen retain their entity IDs and history; Source shows the active route's friendly name.
 
 ---
 
