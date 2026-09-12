@@ -60,7 +60,7 @@ FFF0/SPP controllers accept 4–12 points. Readback uses the detected product's
 APK-defined channel order and width. Program these schedules in Fluval Connect.
 
 Auto schedules preserve FluvalConnect's midnight wrapping for sunrise and
-sunset ramps. Four-channel product profiles send and accept exactly four day
+sunset ramps. Four-channel product profiles read exactly four day
 and night levels; five-channel profiles use five. Readback is accepted only
 when its packet shape, channel width, point limits, times, ramps, and levels
 fit the corresponding APK controller format.
@@ -93,8 +93,9 @@ and overwrites memory in the physical fixture.
 
 On load and reconnect, the integration asks Home Assistant for its best
 connectable route across local adapters and ESPHome Bluetooth proxies. It uses
-a fresh BLE client for each reconnect and runs a keep-alive every 10 seconds
-while connected.
+a fresh BLE client for each reconnect. The keep-alive interval is configurable
+from 5 to 60 seconds (default 10) while connected; it is separate from the idle
+connection window.
 
 The active connection window is configurable from 30 to 600 seconds, with a
 two-minute default. An idle session closes after this window; unlimited
@@ -108,9 +109,9 @@ preserved because Fluval controllers normally stop advertising during an
 active session, and advertisements from other scanners do not replace it.
 
 Source exposes only the friendly name of the adapter or proxy confirmed by
-Home Assistant's connected GATT client. Scanner addresses, the latest
-advertisement, product profile, connection and command state, and schedule
-evidence remain available in redacted diagnostics.
+Home Assistant's connected GATT client. Product profile, connection and command
+state, and schedule evidence remain available in redacted diagnostics.
+Identifying addresses and names are removed from that downloadable report.
 
 Complete commands are serialized per fixture so multi-packet operations retain
 their APK-defined order when different Home Assistant entities or actions are

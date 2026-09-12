@@ -10,7 +10,7 @@
 
 <p align="center">
   <strong>Premium local control for Fluval aquarium LED lights in Home Assistant.</strong><br/>
-  No cloud. No vendor app dependency. Just Bluetooth, your tank, and automations that behave.
+  Everyday control over local Bluetooth. Program hardware schedules in Fluval Connect.
 </p>
 
 ---
@@ -29,7 +29,7 @@ Fluval BLE turns compatible Fluval aquarium lights into first-class Home Assista
 | **Native light control** | Use Home Assistant's standard light card for power, brightness, colour, and supported controller-native effects. Product-specific FluvalConnect data translates the colour picker to the fixture's physical channels. |
 | **Exact channel controls** | Adjust every physical emitter with the same 0–100% channel layout and product-specific labels used by FluvalConnect. These sliders remain the authoritative control for exact spectrum tuning. |
 | **Native effects** | Use the light card to select the weather and lighting effects supported by the detected fixture. Turning off an active classic weather effect clears its manual channels before powering off, so the effect is not retained for the next On. |
-| **Native fixture schedules** | Store Auto, Professional, and timed-effect schedules directly on supported fixtures so they continue running without Home Assistant. |
+| **Native fixture schedules** | Select and read back schedules saved on the fixture using Fluval Connect. The fixture runs them independently of Home Assistant. |
 | **Scheduled on/off indication** | Classic lights show expected Auto/Pro on/off state from the fixture's read-back schedule and synchronized clock, marked as assumed state. No lighting commands are sent to update the display. |
 | **Daylight-saving control** | Supported fixtures expose their onboard daylight-saving setting as a configuration switch. |
 | **Mode** | Select **Manual**, **Automatic**, or **Professional** from a dropdown. Setting a colour automatically switches the fixture to Manual mode. |
@@ -278,11 +278,11 @@ and automation trace rather than showing an apparent success.
         rgb_color: [0, 80, 255]
 ```
 
-**Notify if the light disconnects**
+**Notify if the light becomes unreachable**
 
 ```yaml
 - id: fluval_disconnect
-  alias: "Tank light disconnected"
+  alias: "Tank light unreachable"
   trigger:
     - platform: state
       entity_id: binary_sensor.fluval_aabbccddeeff_reachable
@@ -290,7 +290,7 @@ and automation trace rather than showing an apparent success.
   action:
     - service: notify.mobile
       data:
-        message: "Fluval tank light lost connection."
+        message: "Fluval tank light has not been seen recently."
 ```
 
 Replace `aabbccddeeff` with your device's MAC (without colons), and `person.you` / `notify.mobile` with your actual entity IDs and services.
@@ -330,6 +330,7 @@ its APK sources are documented separately in
 [APK colour-control evidence](docs/apk-colour-evidence.md).
 
 **BLE connection lifecycle:**
+
 - Home Assistant selects the best connectable local adapter or ESPHome proxy on each connection.
 - Connections release after the configured idle window.
 - Reachable describes recent fixture activity rather than only the current GATT connection.

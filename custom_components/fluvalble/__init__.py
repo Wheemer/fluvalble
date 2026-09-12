@@ -766,7 +766,7 @@ def _normalize_fixture_pro_schedule(schedule: object) -> list[dict[str, Any]] | 
 
 
 def _normalize_effect_schedule(schedule: object) -> list[dict[str, Any]] | None:
-    """Normalize saved, submitted, or fixture-read timed-effect windows for the card."""
+    """Normalize fixture-read timed-effect windows."""
     if not isinstance(schedule, list):
         return None
     windows: list[dict[str, Any]] = []
