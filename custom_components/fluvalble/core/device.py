@@ -1180,10 +1180,7 @@ class Device:
                 normalized = [
                     {
                         "minute": (hour * 60) + minute,
-                        **{
-                            f"channel_{index}": int(level)
-                            for index, level in enumerate(levels, start=1)
-                        },
+                        **{f"channel_{index}": int(level) for index, level in enumerate(levels, start=1)},
                     }
                     for (hour, minute), levels in zip(raw_times, raw_levels, strict=True)
                 ]
