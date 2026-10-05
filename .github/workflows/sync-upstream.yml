@@ -1,0 +1,67 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Mirror upstream main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync upstream while preserving fork automation
+        shell: bash
+        run: |
+          set -euo pipefail
+          preserved_files=(
+            .github/dependabot.yml
+            .github/workflows/codeql.yml
+            .github/workflows/fork-quality.yml
+            .github/workflows/sync-upstream.yml
+          )
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/MrMooreUK/fluvalble.git 2>/dev/null || git remote set-url upstream https://github.com/MrMooreUK/fluvalble.git
+          git fetch origin main
+          git fetch upstream main
+          original_sha="$(git rev-parse origin/main)"
+          upstream_sha="$(git rev-parse upstream/main)"
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+
+          for file in "${preserved_files[@]}"; do
+            [ -f "$file" ] || continue
+            mkdir -p "$temp_dir/$(dirname "$file")"
+            cp "$file" "$temp_dir/$file"
+          done
+
+          git reset --hard "$upstream_sha"
+
+          for file in "${preserved_files[@]}"; do
+            [ -f "$temp_dir/$file" ] || continue
+            mkdir -p "$(dirname "$file")"
+            cp "$temp_dir/$file" "$file"
+          done
+
+          git add --all
+          if git diff --cached --quiet; then
+            echo "Fork already mirrors upstream; no update required."
+            exit 0
+          fi
+
+          git commit -m "chore: sync upstream main"
+          git push --force-with-lease="refs/heads/main:$original_sha" origin HEAD:main
