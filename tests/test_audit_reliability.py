@@ -16,6 +16,24 @@ def make_device():
     return Device("Audit", config_data={"mac": "AA:BB:CC:DD:EE:FF", "product_id": 328})
 
 
+def test_single_channel_request_preserves_other_channels_read_on_reconnect():
+    async def run():
+        device = make_device()
+        device.values.update(led_on_off=True, channel_1=10, channel_2=5)
+
+        async def prepare():
+            device.values["channel_2"] = 75
+            return True
+
+        device._async_prepare_command = AsyncMock(side_effect=prepare)
+        device._async_send_packet = AsyncMock(return_value=True)
+        assert await device.async_set_channels({"channel_1": 30})
+        assert device.values["channel_2"] == 75
+        device._async_send_packet.assert_awaited_once_with(protocol.old_all_zone_packet([30, 75, 0, 0]))
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("success", [False, True])
 @pytest.mark.parametrize("reported", [False, True])
 def test_dst_write_preserves_fresh_readback(success, reported):

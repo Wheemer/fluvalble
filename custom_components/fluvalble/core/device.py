@@ -1255,9 +1255,6 @@ class Device:
             _LOGGER.debug("Skipping Fluval channel write because targets are unchanged: %s", targets)
             return True
 
-        old_values = dict(self.values)
-        changed_channels = [channel for channel, value in targets.items() if int(old_values.get(channel, -1)) != value]
-        single_channel = changed_channels[0] if len(changed_channels) == 1 and not force else None
         if not await self._async_prepare_command():
             _LOGGER.warning("Cannot set Fluval channel before BLE device is available")
             return False
@@ -1287,6 +1284,11 @@ class Device:
 
         old_values = dict(self.values)
 
+        # Reconnection and mode writes can refresh untouched channels. Merge
+        # the explicit request into that current state, never the idle cache.
+        targets = {channel: max(0, min(100, int(values.get(channel, self.values[channel])))) for channel in channels}
+        changed_channels = [channel for channel, value in targets.items() if int(old_values.get(channel, -1)) != value]
+        single_channel = changed_channels[0] if len(changed_channels) == 1 and not force else None
         for channel, value in targets.items():
             self.values[channel] = value
         ok = await self._async_send_channel_state(
