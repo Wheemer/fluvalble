@@ -1498,18 +1498,15 @@ class Device:
             )
             return False
 
-        previous = self.values.get("daylight_saving_time")
-        self.values["daylight_saving_time"] = enabled
+        revision = self._control_readback_revision.get("daylight_saving_time", 0)
         if not await self._async_send_packet(protocol.wifi_dst_packet(enabled)):
-            if isinstance(previous, bool):
-                self.values["daylight_saving_time"] = previous
-            else:
-                self.values.pop("daylight_saving_time", None)
-            for handler in self.updates_component:
-                handler()
             return False
 
-        self.diagnostics["daylight_saving_time"] = enabled
+        if self._control_readback_revision.get("daylight_saving_time", 0) == revision:
+            self.values["daylight_saving_time"] = enabled
+        self.diagnostics["daylight_saving_time"] = self.values["daylight_saving_time"]
+        for handler in self.updates_component:
+            handler()
         return True
 
     def _manual_preset_values(self, slot: int) -> list[int] | None:
@@ -2235,6 +2232,9 @@ class Device:
             updated = True
 
         if protocol.WIFI_DST_KEY in data and isinstance(data[protocol.WIFI_DST_KEY], bool):
+            self._control_readback_revision["daylight_saving_time"] = (
+                self._control_readback_revision.get("daylight_saving_time", 0) + 1
+            )
             self.values["daylight_saving_time"] = data[protocol.WIFI_DST_KEY]
             self.diagnostics["daylight_saving_time"] = data[protocol.WIFI_DST_KEY]
             updated = True

@@ -16,6 +16,30 @@ def make_device():
     return Device("Audit", config_data={"mac": "AA:BB:CC:DD:EE:FF", "product_id": 328})
 
 
+@pytest.mark.parametrize("success", [False, True])
+@pytest.mark.parametrize("reported", [False, True])
+def test_dst_write_preserves_fresh_readback(success, reported):
+    async def run():
+        device = Device("Audit", config_data={"mac": "AA:BB:CC:DD:EE:FF", "product_id": 532})
+        device.client = SimpleNamespace(
+            wifi_facebd=True, spp_transport=False, command_write_uuid="facebd02-7261-6262-6974-696f74626c65"
+        )
+        device.values["daylight_saving_time"] = not reported
+        device._async_prepare_command = AsyncMock(return_value=True)
+
+        async def send(packet):
+            assert packet == protocol.wifi_dst_packet(True)
+            device._decode_wifi_update({99: reported})
+            return success
+
+        device._async_send_packet = AsyncMock(side_effect=send)
+        assert await device.async_set_daylight_saving_time(True) is success
+        assert device.values["daylight_saving_time"] is reported
+        assert device.diagnostics["daylight_saving_time"] is reported
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("product", [328, 532, 545])
 @pytest.mark.parametrize("reported", [0, 90])
 def test_channel_failure_keeps_readback_even_when_equal_to_request(product, reported):
