@@ -217,7 +217,7 @@ class Device:
         # manual channel caches used by commands.
         self._reported_schedule_points: dict[str, tuple[tuple[int, tuple[int, ...]], ...]] = {}
         self._scheduled_power_off = False
-        self._control_readback_revision = {"mode": 0, "led_on_off": 0}
+        self._control_readback_revision = {key: 0 for key in ("mode", "led_on_off", *NUMBERS)}
         self._clock_sync_started = False
         self._clock_sync_lock = asyncio.Lock()
         self._command_transaction_lock = asyncio.Lock()
@@ -1273,6 +1273,7 @@ class Device:
                 and previous_mode in {"automatic", "professional"}
             ):
                 self._channel_restore_mode = previous_mode
+            mode_revision = self._control_readback_revision["mode"]
             if self._uses_wifi_protocol():
                 ok = await self._async_send_packet(protocol.wifi_mode_packet(MODE_TO_CODE["manual"]))
             elif self._uses_spp_protocol():
@@ -1281,7 +1282,8 @@ class Device:
                 ok = await self._async_send_packet(protocol.old_mode_packet(MODE_TO_CODE["manual"]))
             if not ok:
                 return False
-            self.values["mode"] = "manual"
+            if self._control_readback_revision["mode"] == mode_revision:
+                self.values["mode"] = "manual"
 
         old_values = dict(self.values)
 
@@ -1316,12 +1318,32 @@ class Device:
         channel_index = self.numbers().index(single_channel) if single_channel is not None else None
         # Build from a snapshot: power writes can deliver older channel state.
         channel_values = self._channel_values()
+        revisions = dict(self._control_readback_revision)
+
+        def restore_channels() -> None:
+            for channel in self.numbers():
+                if self._control_readback_revision[channel] == revisions[channel]:
+                    self.values[channel] = old_values[channel]
+
+        async def power(value: bool) -> bool:
+            revision = self._control_readback_revision["led_on_off"]
+            builder = (
+                protocol.wifi_switch_packet
+                if self._uses_wifi_protocol()
+                else protocol.spp_switch_packet
+                if self._uses_spp_protocol()
+                else protocol.old_switch_packet
+            )
+            ok = await self._async_send_packet(builder(value))
+            if ok and self._control_readback_revision["led_on_off"] == revision:
+                self.values["led_on_off"] = value
+            return ok
+
         any_channel_on = any(channel_values)
         if self._uses_wifi_protocol():
             if any_channel_on and (force_power or not self.values["led_on_off"]):
-                self.values["led_on_off"] = True
-                if not await self._async_send_packet(protocol.wifi_switch_packet(True)):
-                    self.values = old_values
+                if not await power(True):
+                    restore_channels()
                     return False
             packet = (
                 protocol.wifi_single_zone_packet(channel_index, channel_values[channel_index])
@@ -1329,15 +1351,13 @@ class Device:
                 else protocol.wifi_all_zone_packet(channel_values)
             )
             ok = await self._async_send_packet(packet)
+            channels_written = ok
             if ok and not any_channel_on and (force_power or self.values["led_on_off"]):
-                ok = await self._async_send_packet(protocol.wifi_switch_packet(False))
-                if ok:
-                    self.values["led_on_off"] = False
+                ok = await power(False)
         elif self._uses_spp_protocol():
             if any_channel_on and (force_power or not self.values["led_on_off"]):
-                self.values["led_on_off"] = True
-                if not await self._async_send_packet(protocol.spp_switch_packet(True)):
-                    self.values = old_values
+                if not await power(True):
+                    restore_channels()
                     return False
             packet = (
                 protocol.spp_single_zone_packet(channel_index, channel_values[channel_index])
@@ -1345,30 +1365,26 @@ class Device:
                 else protocol.spp_all_zone_packet(channel_values)
             )
             ok = await self._async_send_packet(packet)
+            channels_written = ok
             if ok and not any_channel_on and (force_power or self.values["led_on_off"]):
-                ok = await self._async_send_packet(protocol.spp_switch_packet(False))
-                if ok:
-                    self.values["led_on_off"] = False
+                ok = await power(False)
         else:
             # The classic hardware capture showed that staging channels while
             # off did not survive the next On. Establish power first.
             if any_channel_on and (force_power or not self.values["led_on_off"]):
-                if not await self._async_send_packet(protocol.old_switch_packet(True)):
-                    self.values = old_values
+                if not await power(True):
+                    restore_channels()
                     return False
-                self.values["led_on_off"] = True
             ok = await self._async_send_packet(protocol.old_all_zone_packet(channel_values))
+            channels_written = ok
             if ok and not any_channel_on and self.values["led_on_off"]:
-                ok = await self._async_send_packet(protocol.old_switch_packet(False))
-                if ok:
-                    self.values["led_on_off"] = False
+                ok = await power(False)
 
         if not ok:
             # A power/mode command may already have succeeded. Never roll
             # those fields back because a later channel write failed.
-            for channel, requested in zip(self.numbers(), channel_values, strict=True):
-                if self.values.get(channel) == requested:
-                    self.values[channel] = old_values[channel]
+            if not channels_written:
+                restore_channels()
             for handler in self.updates_component:
                 handler()
         return ok
@@ -2166,6 +2182,7 @@ class Device:
             channels = decoded["channels"]
             self._channel_count_hint = channel_count
             for index, raw in enumerate(channels):
+                self._control_readback_revision[f"channel_{index + 1}"] += 1
                 self.values[f"channel_{index + 1}"] = max(0, min(100, round(raw / 10)))
             for index in range(len(channels), 5):
                 self.values[f"channel_{index + 1}"] = 0
@@ -2236,6 +2253,7 @@ class Device:
             value = data.get(key)
             if not isinstance(value, bool) and isinstance(value, int) and 0 <= value <= 100:
                 self.values[channel] = value
+                self._control_readback_revision[channel] += 1
                 present += 1
                 updated = True
         fifth_channel = data.get(protocol.WIFI_CHANNEL_KEYS[4])
@@ -2303,6 +2321,7 @@ class Device:
             value = data.get(key)
             if not isinstance(value, bool) and isinstance(value, int) and 0 <= value <= 100:
                 self.values[channel] = value
+                self._control_readback_revision[channel] += 1
                 present += 1
                 updated = True
         if present:

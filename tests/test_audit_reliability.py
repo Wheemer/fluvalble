@@ -16,6 +16,42 @@ def make_device():
     return Device("Audit", config_data={"mac": "AA:BB:CC:DD:EE:FF", "product_id": 328})
 
 
+@pytest.mark.parametrize("product", [328, 532, 545])
+@pytest.mark.parametrize("reported", [0, 90])
+def test_channel_failure_keeps_readback_even_when_equal_to_request(product, reported):
+    async def run():
+        device = Device("Audit", config_data={"mac": "AA:BB:CC:DD:EE:FF", "product_id": product})
+        device.client = SimpleNamespace(
+            spp_transport=product == 545, wifi_facebd=product == 532, command_write_uuid=None
+        )
+        device.values.update(led_on_off=True, channel_1=20)
+        device._async_prepare_command = AsyncMock(return_value=True)
+
+        async def send(packet):
+            if product == 328:
+                body = (
+                    bytes([0, 1, 0])
+                    + b"".join(int(v * 10).to_bytes(2, "little") for v in [reported, 0, 0, 0])
+                    + bytes(16)
+                )
+                raw = bytes([0x68, 5]) + body
+                checksum = 0
+                for value in raw:
+                    checksum ^= value
+                device.decode_update_packet(raw + bytes([checksum]))
+            elif product == 532:
+                device._decode_wifi_update({110: reported})
+            else:
+                device._decode_spp_update({3: reported})
+            return False
+
+        device._async_send_packet = AsyncMock(side_effect=send)
+        assert not await device.async_set_channels({"channel_1": 90})
+        assert device.values["channel_1"] == reported
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("duration,interval", [(60, 30), (5, 30), (65, 30)])
 def test_channel_transition_uses_full_duration(duration, interval):
     async def run():
