@@ -1208,8 +1208,11 @@ class Device:
             }
             start_values = {channel: int(self.values[channel]) for channel in channels}
 
-        steps = max(1, int(transition / max(1, step_seconds)))
+        steps = max(1, -(-transition // max(1, step_seconds)))
+        started = monotonic()
         for step in range(1, steps + 1):
+            deadline = started + transition * step / steps
+            await asyncio.sleep(max(0, deadline - monotonic()))
             async with self.command_transaction(supersede_transition=False):
                 if generation != self._command_generation:
                     self.diagnostics["status"] = "transition_interrupted"
@@ -1226,8 +1229,6 @@ class Device:
                     restore_mode_on_zero=restore_mode_on_zero,
                 ):
                     return False
-            if step < steps:
-                await asyncio.sleep(step_seconds)
         return True
 
     async def _async_set_channels_now(
@@ -1259,8 +1260,9 @@ class Device:
         single_channel = changed_channels[0] if len(changed_channels) == 1 and not force else None
         if not await self._async_prepare_command():
             _LOGGER.warning("Cannot set Fluval channel before BLE device is available")
-            self.values = old_values
             return False
+
+        old_values = dict(self.values)
 
         if self.values.get("mode") != "manual":
             previous_mode = cast(Any, self.values.get("mode"))
@@ -1278,9 +1280,10 @@ class Device:
             else:
                 ok = await self._async_send_packet(protocol.old_mode_packet(MODE_TO_CODE["manual"]))
             if not ok:
-                self.values = old_values
                 return False
             self.values["mode"] = "manual"
+
+        old_values = dict(self.values)
 
         for channel, value in targets.items():
             self.values[channel] = value
@@ -1361,7 +1364,11 @@ class Device:
                     self.values["led_on_off"] = False
 
         if not ok:
-            self.values = old_values
+            # A power/mode command may already have succeeded. Never roll
+            # those fields back because a later channel write failed.
+            for channel, requested in zip(self.numbers(), channel_values, strict=True):
+                if self.values.get(channel) == requested:
+                    self.values[channel] = old_values[channel]
             for handler in self.updates_component:
                 handler()
         return ok

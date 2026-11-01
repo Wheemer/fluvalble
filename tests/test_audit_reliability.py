@@ -16,6 +16,48 @@ def make_device():
     return Device("Audit", config_data={"mac": "AA:BB:CC:DD:EE:FF", "product_id": 328})
 
 
+@pytest.mark.parametrize("duration,interval", [(60, 30), (5, 30), (65, 30)])
+def test_channel_transition_uses_full_duration(duration, interval):
+    async def run():
+        device = make_device()
+        clock = [0.0]
+        writes = []
+
+        async def sleep(delay):
+            clock[0] += delay
+
+        async def write(values, **kwargs):
+            writes.append((clock[0], values["channel_1"]))
+            return True
+
+        device._async_set_channels_now = AsyncMock(side_effect=write)
+        with (
+            patch("custom_components.fluvalble.core.device.monotonic", side_effect=lambda: clock[0]),
+            patch("custom_components.fluvalble.core.device.asyncio.sleep", side_effect=sleep),
+        ):
+            assert await device.async_set_channels({"channel_1": 100}, transition=duration, step_seconds=interval)
+        assert writes[-1] == (duration, 100)
+        assert writes[0][0] > 0
+
+    asyncio.run(run())
+
+
+def test_failed_channel_preparation_preserves_reconnect_state():
+    async def run():
+        device = make_device()
+
+        async def prepare():
+            device.values.update(mode="professional", channel_1=42)
+            return False
+
+        device._async_prepare_command = AsyncMock(side_effect=prepare)
+        assert not await device.async_set_channels({"channel_1": 90})
+        assert device.values["mode"] == "professional"
+        assert device.values["channel_1"] == 42
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("existing", [True, False])
 def test_clock_sync_initializes_without_reentering_clock_lock(existing):
     async def run():
