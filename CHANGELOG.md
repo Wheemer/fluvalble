@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.0.17-5] — Fork hardware test
+
+- Experimental AquaSky 3.0 local Wi-Fi build from upstream draft #146.
+
 ### Added
 
 - Experimental native local MQTT control for AquaSky 3.0 product 532, based on
