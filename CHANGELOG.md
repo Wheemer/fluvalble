@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.0.17-6] — Fork test build
+
+### Fixed
+
+- Keep the original Bluetooth setup and options for Home Assistant installs
+  without MQTT configured.
+- Bound the Bluetooth provisioning session and explain how to recover when
+  the fixture joins Wi-Fi but MQTT setup does not finish.
+
 ### Added
 
 - Experimental native local MQTT control for AquaSky 3.0 product 532, based on
