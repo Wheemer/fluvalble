@@ -1,6 +1,8 @@
 """Offline native MQTT fixture tests; no network, broker or BLE hardware."""
 
 import asyncio
+from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -71,12 +73,38 @@ def test_mqtt_transport_does_not_inherit_ble_lifecycle():
     assert not issubclass(MqttClient, Client)
 
 
+@pytest.mark.asyncio
+async def test_mqtt_partial_subscription_failure_rolls_back_and_can_retry(broker):
+    c = client()
+    broker.async_subscribe_connection_status.side_effect = [KeyError("MQTT reloading"), broker.unsubscribe_status]
+    try:
+        assert not await c.ensure_connected()
+        assert not c._unsubscribers and c._monitor is None
+        broker.unsubscribe.assert_called_once()
+        assert await c.ensure_connected()
+    finally:
+        await c.stop()
+    assert broker.unsubscribe.call_count == 2
+
+
 def create_background_task(coro, name):
     return asyncio.create_task(coro, name=name)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["success", "no_mqtt", "rejected", "timeout", "missing_characteristic"])
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "success",
+        "no_mqtt",
+        "rejected",
+        "timeout",
+        "missing_characteristic",
+        "restore_failed",
+        "cancel_stop",
+        "cancel_start",
+    ],
+)
 async def test_ha_provisioning_uses_existing_gatt_and_requires_mqtt_response(broker, monkeypatch, outcome):
     from custom_components.fluvalble import wifi_setup
 
@@ -90,6 +118,7 @@ async def test_ha_provisioning_uses_existing_gatt_and_requires_mqtt_response(bro
         read_gatt_char=AsyncMock(return_value=f"brand:Fluval;mac:{WIFI_MAC};;".encode()),
         start_notify=AsyncMock(),
         stop_notify=AsyncMock(),
+        is_connected=True,
     )
     written = bytearray()
     wifi = wifi_frame("Tank", "test-only", 0)
@@ -113,8 +142,53 @@ async def test_ha_provisioning_uses_existing_gatt_and_requires_mqtt_response(bro
             receive(None, b"mqtt:connected;;")
 
     gatt.write_gatt_char = AsyncMock(side_effect=write)
-    device.client = SimpleNamespace(_ensure_client=AsyncMock(return_value=gatt), _command_lock=asyncio.Lock())
+    from custom_components.fluvalble.wifi_setup import PROVISION_UUID
+
+    device.client = SimpleNamespace(
+        _ensure_client=AsyncMock(return_value=gatt),
+        _command_lock=asyncio.Lock(),
+        notify_uuids=[PROVISION_UUID],
+        notify_callback=MagicMock(),
+        _safe_disconnect=AsyncMock(),
+    )
     device._async_prepare_command = AsyncMock(return_value=True)
+    if outcome == "restore_failed":
+        gatt.start_notify.side_effect = [None, RuntimeError("proxy lost the subscription")]
+    if outcome in {"cancel_stop", "cancel_start"}:
+        cleanup_started = asyncio.Event()
+        active_callback = device.client.notify_callback
+
+        async def start_notify(_, callback):
+            nonlocal active_callback
+            if callback is device.client.notify_callback and outcome == "cancel_start":
+                cleanup_started.set()
+                await asyncio.Future()
+            active_callback = callback
+
+        async def stop_notify(_):
+            nonlocal active_callback
+            if gatt.stop_notify.await_count == 2 and outcome == "cancel_stop":
+                cleanup_started.set()
+                await asyncio.Future()
+            active_callback = None
+
+        async def disconnect():
+            nonlocal active_callback
+            active_callback = None
+
+        gatt.start_notify.side_effect = start_notify
+        gatt.stop_notify.side_effect = stop_notify
+        device.client._safe_disconnect.side_effect = disconnect
+        setup = asyncio.create_task(wifi_setup.provision(hass, device, wifi, settings))
+        await asyncio.wait_for(cleanup_started.wait(), 1)
+        setup.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await setup
+        device.client._safe_disconnect.assert_awaited_once()
+        assert active_callback is None
+        assert not device.client._command_lock.locked()
+        broker.async_subscribe.assert_not_awaited()
+        return
     if outcome == "success":
 
         async def light_command():
@@ -144,13 +218,17 @@ async def test_ha_provisioning_uses_existing_gatt_and_requires_mqtt_response(bro
         monkeypatch.setattr(wifi_setup, "BLE_SETUP_TIMEOUT", 0.2)
         with pytest.raises(TimeoutError):
             await wifi_setup.provision(hass, device, wifi, settings)
+    elif outcome == "restore_failed":
+        assert await wifi_setup.provision(hass, device, wifi, settings) == WIFI_MAC
     else:
         with pytest.raises(ConnectionError, match="rejected"):
             await wifi_setup.provision(hass, device, wifi, settings)
     assert written == wifi + settings
-    gatt.stop_notify.assert_awaited_once_with(characteristic)
+    assert gatt.stop_notify.await_count == 2
+    gatt.start_notify.assert_awaited_with(characteristic, device.client.notify_callback)
+    assert device.client._safe_disconnect.await_count == int(outcome == "restore_failed")
     assert not device.client._command_lock.locked()
-    assert broker.unsubscribe.call_count == int(outcome in {"success", "no_mqtt"})
+    assert broker.unsubscribe.call_count == int(outcome in {"success", "no_mqtt", "restore_failed"})
 
 
 @pytest.mark.asyncio
@@ -351,7 +429,9 @@ async def test_native_device_never_looks_up_ble_and_keeps_entity_ids(broker, mon
 @pytest.mark.asyncio
 async def test_transport_options_preserve_entry_identity_and_settings(broker):
     flow = OptionsFlowHandler()
-    flow.hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _: [SimpleNamespace()]))
+    flow.hass = SimpleNamespace(
+        config_entries=SimpleNamespace(async_entries=lambda _: [SimpleNamespace(disabled_by=None)])
+    )
     flow.config_entry.data = {"mac": BLE_MAC, "product_id": 532}
     flow.config_entry.options = {"active_time": 60, "lamp_profile": "aquasky3"}
     flow.async_create_entry = MagicMock(side_effect=lambda **kwargs: kwargs)
@@ -390,6 +470,74 @@ async def test_ble_only_setup_and_options_keep_original_flow(monkeypatch, entrie
     options.async_show_form = MagicMock(side_effect=lambda **kwargs: kwargs)
     options.add_suggested_values_to_schema = MagicMock()
     assert (await options.async_step_init())["step_id"] == "init"
+    options.config_entry.options = {"transport": "local_mqtt", "wifi_mac": WIFI_MAC, "active_time": 60}
+    options.async_create_entry = MagicMock(side_effect=lambda **kwargs: kwargs)
+    updated = (await options.async_step_init({"active_time": 90}))["data"]
+    assert updated == {"transport": "local_mqtt", "wifi_mac": WIFI_MAC, "active_time": 90}
+
+
+def test_ble_import_does_not_load_optional_mqtt_modules():
+    conftest = Path(__file__).resolve().with_name("conftest.py")
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import runpy, sys; runpy.run_path(sys.argv[1]); "
+            "import custom_components.fluvalble.config_flow, custom_components.fluvalble.core.device; "
+            "assert not any(name in sys.modules for name in ("
+            "'homeassistant.components.mqtt', 'custom_components.fluvalble.core.mqtt_client', "
+            "'custom_components.fluvalble.wifi_setup'))",
+            str(conftest),
+        ],
+        check=True,
+        cwd=conftest.parent.parent,
+    )
+
+
+@pytest.mark.asyncio
+async def test_mqtt_downlink_allows_only_property_messages(broker):
+    c = client()
+    for kind, packet in [
+        ("ota", b"url"),
+        ("url", b"http"),
+        ("http", b"ota"),
+        ("property_get", b"x"),
+        ("property_set", None),
+        ("property_set;url:http", b"x"),
+        ("property_set", protocol.cbor_map({200: "http://example.invalid/fw.bin"})),
+        ("property_set", protocol.cbor_map({104: True, 201: "ota"})),
+        ("property_set", protocol.cbor_map({123: 1})),
+        ("property_set", protocol.cbor_map({104: "find"})),
+        ("property_set", protocol.cbor_map({52: "not-find"})),
+        ("property_set", protocol.cbor_map({114: ["unexpected"]})),
+        ("property_set", bytes.fromhex("a21868f41868f5")),
+        ("property_set", protocol.spp_command({2: True})),
+        ("property_set", b"not CBOR"),
+    ]:
+        with pytest.raises(ValueError, match="Unsupported"):
+            await c._publish(kind, packet)
+    broker.async_publish.assert_not_awaited()
+    await c.start()
+    try:
+        await c._publish("property_get")
+        await c._publish("property_set", protocol.cbor_map({104: True}))
+        payloads = [call.args[2] for call in broker.async_publish.await_args_list]
+        assert payloads == ["id:1;type:property_get;;", "id:2;type:property_set;param:a11868f5;;"]
+        assert not any(token in payload.lower() for payload in payloads for token in ("ota", "url", "http"))
+        for packet in (
+            protocol.wifi_find_packet(),
+            protocol.wifi_dst_packet(True),
+            protocol.wifi_timezone_packet(),
+            protocol.wifi_clock_packet(),
+            protocol.wifi_mode_packet(1),
+            protocol.wifi_effect_packet(4),
+            protocol.wifi_all_zone_packet([10, 20, 30, 40, 50]),
+            protocol.cbor_map({114: [360, 420], 115: [1020, 1080], 116: 65535, 117: b"1234", 118: b"0000"}),
+            protocol.cbor_map({120: 2, 121: [360, 1080], 122: b"12340000"}),
+        ):
+            await c._publish("property_set", packet)
+    finally:
+        await c.stop()
 
 
 @pytest.mark.asyncio
@@ -400,6 +548,95 @@ async def test_mqtt_options_require_broker_and_valid_wifi_mac(broker):
     assert (await flow.async_step_mqtt_options({"wifi_mac": "#"}))["errors"] == {"base": "invalid_format"}
     broker.async_wait_for_mqtt_client.return_value = False
     assert (await flow.async_step_mqtt_options({"wifi_mac": WIFI_MAC}))["errors"] == {"base": "mqtt_required"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured_host", "source_ip", "default_host"),
+    [
+        ("mqtt.internal", "192.0.2.10", "mqtt.internal"),
+        ("core-mosquitto", "192.0.2.10", "192.0.2.10"),
+        ("localhost", "192.0.2.10", "192.0.2.10"),
+        ("127.0.0.1", "192.0.2.10", "192.0.2.10"),
+        ("::1", "192.0.2.10", "192.0.2.10"),
+        ("core-mosquitto", "127.0.0.1", ""),
+        ("core-mosquitto", None, ""),
+    ],
+)
+async def test_provisioning_defaults_to_ha_broker_and_requires_host_mismatch_confirmation(
+    broker, monkeypatch, configured_host, source_ip, default_host
+):
+    import importlib
+    from types import ModuleType
+
+    from homeassistant.exceptions import HomeAssistantError
+
+    class Marker(str):
+        def __new__(cls, name, *, default=None):
+            marker = super().__new__(cls, name)
+            marker.default = lambda: default
+            return marker
+
+    vol = importlib.import_module("voluptuous")
+    monkeypatch.setattr(vol, "Required", Marker)
+    monkeypatch.setattr(vol, "Optional", Marker)
+    selector = ModuleType("homeassistant.helpers.selector")
+    selector.TextSelector = lambda _: str
+    selector.TextSelectorConfig = dict
+    selector.TextSelectorType = SimpleNamespace(PASSWORD="password")
+    monkeypatch.setitem(sys.modules, selector.__name__, selector)
+    network = ModuleType("homeassistant.components.network")
+    network.async_get_source_ip = AsyncMock(return_value=source_ip)
+    if source_ip is None:
+        network.async_get_source_ip.side_effect = HomeAssistantError("No usable adapter")
+    monkeypatch.setitem(sys.modules, network.__name__, network)
+    monkeypatch.setattr(sys.modules["homeassistant.components"], "network", network, raising=False)
+    integration = importlib.import_module("custom_components.fluvalble")
+    wifi_setup = importlib.import_module("custom_components.fluvalble.wifi_setup")
+    device = object()
+    provision = AsyncMock(return_value=WIFI_MAC)
+    monkeypatch.setattr(integration, "entry_runtime_data", lambda *_: SimpleNamespace(device=device))
+    monkeypatch.setattr(wifi_setup, "provision", provision)
+    flow = OptionsFlowHandler()
+    mqtt_entry = SimpleNamespace(disabled_by=None, data={"broker": configured_host})
+    flow.hass = SimpleNamespace(config_entries=SimpleNamespace(async_entries=lambda _: [mqtt_entry]))
+    flow.config_entry.data = {"mac": BLE_MAC, "product_id": 532}
+    flow.config_entry.options = {}
+    flow.async_show_form = MagicMock(side_effect=lambda **kwargs: kwargs)
+    flow.async_create_entry = MagicMock(side_effect=lambda **kwargs: kwargs)
+    form = await flow.async_step_provision_wifi()
+    fields = {str(key): key for key in form["data_schema"].schema}
+    assert fields["broker_host"].default() == default_host
+    assert network.async_get_source_ip.await_count == int(configured_host != "mqtt.internal")
+    values = {
+        "confirm": True,
+        "ssid": "Tank",
+        "wifi_password": "wifi-secret",
+        "broker_host": "broker.lan",
+        "broker_port": 1883,
+        "broker_user": "tank",
+        "broker_password": "mqtt-secret",
+    }
+    warning = await flow.async_step_provision_wifi(values)
+    assert warning["errors"] == {"base": "wifi_broker_host_mismatch"}
+    provision.assert_not_awaited()
+    for key in warning["data_schema"].schema:
+        if str(key) in {"wifi_password", "broker_password"}:
+            assert key.default() == ""
+    for field in ("ssid", "wifi_password", "broker_password"):
+        invalid = {**values, "confirm_broker_host": True, field: "bad;value"}
+        result = await flow.async_step_provision_wifi(invalid)
+        assert result["errors"] == {"base": "wifi_invalid_characters"}
+        provision.assert_not_awaited()
+    if default_host:
+        result = await flow.async_step_provision_wifi({**values, "broker_host": default_host})
+        provision.assert_awaited_once()
+        assert provision.await_args.args[3].startswith(f"host:{default_host};".encode())
+        assert result["data"] == {"wifi_mac": WIFI_MAC, "transport": "local_mqtt"}
+        provision.reset_mock()
+    result = await flow.async_step_provision_wifi({**values, "confirm_broker_host": True})
+    provision.assert_awaited_once()
+    assert result["data"] == {"wifi_mac": WIFI_MAC, "transport": "local_mqtt"}
 
 
 def test_provisioning_frames_are_exact_and_use_local_credentials():
@@ -524,6 +761,9 @@ def test_transport_diagnostics_do_not_publish_wifi_identity():
     from custom_components.fluvalble.diagnostics import _redact_diagnostics
 
     assert WIFI_MAC not in str(_redact_diagnostics({"entry": {"data": {"wifi_mac": WIFI_MAC}}}))
+    keys = ("ssid", "psk", "wifi_password", "broker_host", "broker_user", "broker_password", "client_id")
+    raw = {key: "secret-" + key for key in keys}
+    assert "secret-" not in str(_redact_diagnostics({"entry": {"options": raw}}))
 
 
 def test_transport_switch_disables_only_inapplicable_diagnostics(monkeypatch):
